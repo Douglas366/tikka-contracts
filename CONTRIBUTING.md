@@ -7,7 +7,7 @@ Thanks for your interest in contributing to Tikka! This project targets Stellar/
 1. Fork the repository and create a feature branch.
 2. Make your changes with clear, focused commits.
 3. Run `cargo fmt --all` to format code before committing.
-4. Run tests locally before opening a PR.
+4. Run `make ci` to reproduce the full CI job list locally before pushing.
 5. Install the recommended VS Code extensions when prompted and keep format-on-save enabled.
 6. Install the local hooks with `pip install pre-commit && pre-commit install`.
 
@@ -84,6 +84,17 @@ there are no exceptions for individual jobs. Required checks on `master` are:
 - `Build, Test, and Lint` (includes `cargo check`, formatting, clippy, and tests)
 - `Oracle Service CI`
 - `Shell Script Checks`
+
+To reproduce the full CI check list locally before pushing, run:
+
+```bash
+make ci
+```
+
+This runs the exact same steps as the `build_and_test` and `oracle_check` CI jobs
+(orphan check, cargo check, fmt, clippy, build, WASM sizes, error/event docs sync,
+Rust tests, oracle lint/typecheck/tests). It does not include the fuzz-targets
+compile check or the coverage ratchet, which run on their own schedules.
 
 Repository admins must enable branch protection on `master` so these checks are
 required and branches must be up to date before merging. Workflow changes land in

@@ -4,6 +4,11 @@
 pub mod constants;
 pub mod events;
 
+#[cfg(any(test, feature = "testutils"))]
+pub mod config_builder;
+
+pub mod errors;
+
 #[cfg(test)]
 mod nft_mint_test;
 use soroban_sdk::{contracttype, Address, BytesN, String, Vec};

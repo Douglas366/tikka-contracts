@@ -38,7 +38,7 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
 
-      - run: cargo check --workspace --all-targets --all-features --exclude raffle-fuzz
+      - run: cargo check --workspace --all-targets --all-features
 
   build_and_test:
     name: Build, Test, and Lint
@@ -59,14 +59,14 @@ jobs:
     - name: Rust Cache
       uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
 
+    - name: Check for Orphaned Modules
+      run: python3 scripts/check_orphan_modules.py
+
     - name: Cargo Check (fast compile gate)
       run: cargo check --workspace --all-targets
 
     - name: Check Formatting
       run: cargo fmt --all -- --check
-
-    - name: Check for Orphaned Modules
-      run: python3 scripts/check_orphan_modules.py
 
     # Build through the Stellar CLI so CI produces the same artifacts the deploy
     # scripts upload — previously CI built wasm32-unknown-unknown while

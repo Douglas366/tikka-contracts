@@ -16,6 +16,18 @@ repos:
         entry: python3 scripts/check_orphan_modules.py
         language: system
         pass_filenames: false
+      - id: check-error-docs-sync
+        name: check error docs sync
+        entry: bash -c 'python3 scripts/generate_error_docs.py && git diff --exit-code docs/ERRORS.md || (echo "ERROR: docs/ERRORS.md is out of sync. Run: python3 scripts/generate_error_docs.py" && exit 1)'
+        language: system
+        pass_filenames: false
+        files: ^(contracts/.*/src/lib\.rs|docs/ERRORS\.md|scripts/generate_error_docs\.py)$
+      - id: check-event-docs-sync
+        name: check event docs sync
+        entry: bash -c 'python3 scripts/generate_event_docs.py && git diff --exit-code docs/EVENTS.md || (echo "ERROR: docs/EVENTS.md is out of sync. Run: python3 scripts/generate_event_docs.py" && exit 1)'
+        language: system
+        pass_filenames: false
+        files: ^(contracts/.*/src/events\.rs|docs/EVENTS\.md|scripts/generate_event_docs\.py)$
       - id: prettier-oracle
         name: prettier oracle
         entry: bash -lc 'cd oracle && npx prettier --check "**/*.{js,jsx,ts,tsx,json,md}"'
