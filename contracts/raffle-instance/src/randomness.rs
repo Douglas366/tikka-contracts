@@ -311,22 +311,27 @@ impl OracleSeedWinnerSelection {
         Self { seed }
     }
 
-/// Pure (no-`Env`) version of [`select_winner_indices`] used in tests and
-/// off-chain tooling.  Available only when `std` is in scope.
+    /// Pure (no-`Env`) version of [`select_winner_indices`] used in tests and
+    /// off-chain tooling.  Available only when `std` is in scope.
+    ///
+    /// This is the `std`-gated twin of [`Self::select_winner_indices`], so the
+    /// whole body uses `std::vec::Vec` semantics (`push`, `IndexMut`) rather
+    /// than the `soroban_sdk::Vec` API.  Keeping the two containers distinct is
+    /// deliberate: the on-chain variant must stay within the Soroban host's
+    /// `Env`-backed allocations, while this one is free to use plain `std`.
     #[cfg(any(test, feature = "std"))]
     pub fn select_winner_indices_pure(
         &self,
         total_tickets: u32,
         winner_count: u32,
     ) -> std::vec::Vec<u32> {
-        let mut indices = std::vec::Vec::new();
+        let mut indices: std::vec::Vec<u32> = std::vec::Vec::new();
         if total_tickets == 0 || winner_count == 0 {
             return indices;
         }
 
         let n = total_tickets as u64;
         let effective_count = winner_count.min(total_tickets) as usize;
-        let mut drawn_count: usize = 0;
 
         // Partial Fisher-Yates shuffle: select effective_count unique indices from [0, n)
         // in exactly effective_count steps with no unbounded loop.
@@ -334,11 +339,15 @@ impl OracleSeedWinnerSelection {
         // swap tracking to ensure uniqueness without a linear scan.
         let mut remaining = n;
         let mut current_seed = self.seed;
-        let mut swaps: Vec<(u64, u64)> = Vec::new();
+        let mut swaps: std::vec::Vec<(u64, u64)> = std::vec::Vec::new();
 
         for _ in 0..effective_count {
             // Generate an unbiased u64 in [0, remaining) using rejection sampling.
-            let largest_multiple_remaining = (u64::MAX / remaining) * remaining;
+            // `remaining >= 1` holds for every iteration, and
+            // `(u64::MAX / remaining) * remaining <= u64::MAX`, so the
+            // `wrapping_*` forms below cannot actually wrap.
+            let largest_multiple_remaining =
+                (u64::MAX / remaining).wrapping_mul(remaining);
             let mut candidate = loop {
                 if current_seed < largest_multiple_remaining {
                     break current_seed;
@@ -361,7 +370,7 @@ impl OracleSeedWinnerSelection {
             indices.push(actual as u32);
 
             // Swap: position r now contains what was at position remaining-1.
-            let last = remaining - 1;
+            let last = remaining.saturating_sub(1);
             let mut last_actual = last;
             for (pos, val) in swaps.iter() {
                 if *pos == last {
@@ -382,10 +391,10 @@ impl OracleSeedWinnerSelection {
             if let Some(idx) = found_idx {
                 swaps[idx].1 = last_actual;
             } else {
-                swaps.push_back((r, last_actual));
+                swaps.push((r, last_actual));
             }
 
-            remaining -= 1;
+            remaining = remaining.saturating_sub(1);
         }
 
         indices
@@ -471,14 +480,27 @@ pub fn aggregate_quorum_seeds(env: &Env, seeds: &Vec<(Address, u64)>) -> u64 {
     for i in 1..sorted.len() {
         let mut j = i;
         while j > 0 {
-            let (addr_j, seed_j) = sorted.get(j).unwrap();
-            let (addr_prev, seed_prev) = sorted.get(j - 1).unwrap();
+            let prev = j.saturating_sub(1);
+            // `sorted` was filled with exactly one element per input seed, so
+            // both indices are in range and the two lookups cannot fail in
+            // practice. Binding them explicitly (rather than `unwrap`) keeps
+            // this function within the crate's `deny(clippy::unwrap_used)`
+            // while preserving the sort: an unexpected `None` simply leaves the
+            // suffix untouched instead of panicking.
+            let (addr_j, seed_j) = match sorted.get(j) {
+                Some(pair) => pair,
+                None => break,
+            };
+            let (addr_prev, seed_prev) = match sorted.get(prev) {
+                Some(pair) => pair,
+                None => break,
+            };
             let bytes_j: Bytes = addr_j.clone().to_xdr(env);
             let bytes_prev: Bytes = addr_prev.clone().to_xdr(env);
             if bytes_j < bytes_prev {
                 sorted.set(j, (addr_prev.clone(), seed_prev));
-                sorted.set(j - 1, (addr_j.clone(), seed_j));
-                j -= 1;
+                sorted.set(prev, (addr_j.clone(), seed_j));
+                j = prev;
             } else {
                 break;
             }

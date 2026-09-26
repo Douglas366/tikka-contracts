@@ -1,8 +1,3 @@
-#c[cfg(test)]
-
-extern crate std;
-use std::vec;
-
 use crate::*;
 use soroban_sdk::{
 	testutils::{budget::Budget, Address as _, Events, Ledger, Register},

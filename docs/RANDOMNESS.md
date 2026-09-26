@@ -146,6 +146,38 @@ To eliminate single-oracle trust assumptions in high-stakes raffles, the contrac
 - As long as at least 1 of the $k$ delivered seeds comes from an honest oracle, the output of the SHA-256 aggregation function is cryptographically uniform and un-biasable.
 - Collusion among at least $k$ oracles is required to manipulate or predict the outcome.
 
+### Ledger windows
+
+Both bounds below are protocol-wide constants and live together in
+`contracts/raffle-shared/src/constants.rs`. They are a matched pair: together
+they define the window during which a VRF proof is the *only* accepted answer
+for a draw.
+
+| Bound | Constant | Value | Guards | On violation |
+|---|---|---|---|---|
+| Lower | `RANDOMNESS_MIN_DELAY_LEDGERS` | 10 ledgers (~50 s) | `submit_vrf_proof` | `Error::RandomnessTooEarly` |
+| Upper | `ORACLE_TIMEOUT_LEDGERS` | 200 ledgers (~17 min) | `trigger_randomness_fallback` | `Error::FallbackTooEarly` |
+
+Timeline, with `R` = the ledger the randomness request was recorded in:
+
+```text
+  R                    R+10                        R+200
+  |---------------------|---------------------------|
+  |  proofs rejected    |    proofs accepted        |  fallback allowed
+  |  (RandomnessTooEarly)|                          |  (FallbackTooEarly)
+```
+
+`R + 10` is deliberately non-zero: it guarantees the request height is already
+committed on-chain before any oracle could produce a proof for it, so an oracle
+cannot choose a request ledger that makes its own seed convenient. Once the
+upper bound passes, the honest oracles are presumed unavailable and the raffle
+is resolved by fallback (refund, or an `Internal` seed) rather than stalling
+forever.
+
+Both checks are evaluated against `env.ledger().sequence()` using a saturating
+add, so a request recorded near `u32::MAX` cannot wrap and unlock the window
+early.
+
 ### Timeout / fallback (`ORACLE_TIMEOUT_LEDGERS = 200`)
 
 If fewer than $k$ oracles deliver valid seeds before `request_ledger + 200`:
@@ -195,6 +227,7 @@ Also consider:
 |---|---|
 | Enum | `contracts/raffle-shared/src/lib.rs` → `RandomnessSource` |
 | Timeout constant | `contracts/raffle-shared/src/constants.rs` → `ORACLE_TIMEOUT_LEDGERS` |
+| Min-delay constant | `contracts/raffle-shared/src/constants.rs` → `RANDOMNESS_MIN_DELAY_LEDGERS` |
 | Seed + strategies | `contracts/raffle-instance/src/randomness.rs` |
 | Finalize / oracle / fallback | `contracts/raffle-instance/src/draw.rs` |
 | Commits | `contracts/raffle-instance/src/tickets.rs` → `submit_commit` |
@@ -538,6 +571,38 @@ To eliminate single-oracle trust assumptions in high-stakes raffles, the contrac
 - As long as at least 1 of the $k$ delivered seeds comes from an honest oracle, the output of the SHA-256 aggregation function is cryptographically uniform and un-biasable.
 - Collusion among at least $k$ oracles is required to manipulate or predict the outcome.
 
+### Ledger windows
+
+Both bounds below are protocol-wide constants and live together in
+`contracts/raffle-shared/src/constants.rs`. They are a matched pair: together
+they define the window during which a VRF proof is the *only* accepted answer
+for a draw.
+
+| Bound | Constant | Value | Guards | On violation |
+|---|---|---|---|---|
+| Lower | `RANDOMNESS_MIN_DELAY_LEDGERS` | 10 ledgers (~50 s) | `submit_vrf_proof` | `Error::RandomnessTooEarly` |
+| Upper | `ORACLE_TIMEOUT_LEDGERS` | 200 ledgers (~17 min) | `trigger_randomness_fallback` | `Error::FallbackTooEarly` |
+
+Timeline, with `R` = the ledger the randomness request was recorded in:
+
+```text
+  R                    R+10                        R+200
+  |---------------------|---------------------------|
+  |  proofs rejected    |    proofs accepted        |  fallback allowed
+  |  (RandomnessTooEarly)|                          |  (FallbackTooEarly)
+```
+
+`R + 10` is deliberately non-zero: it guarantees the request height is already
+committed on-chain before any oracle could produce a proof for it, so an oracle
+cannot choose a request ledger that makes its own seed convenient. Once the
+upper bound passes, the honest oracles are presumed unavailable and the raffle
+is resolved by fallback (refund, or an `Internal` seed) rather than stalling
+forever.
+
+Both checks are evaluated against `env.ledger().sequence()` using a saturating
+add, so a request recorded near `u32::MAX` cannot wrap and unlock the window
+early.
+
 ### Timeout / fallback (`ORACLE_TIMEOUT_LEDGERS = 200`)
 
 If fewer than $k$ oracles deliver valid seeds before `request_ledger + 200`:
@@ -614,6 +679,7 @@ Also consider:
 |---|---|
 | Enum | `contracts/raffle-shared/src/lib.rs` → `RandomnessSource` |
 | Timeout constant | `contracts/raffle-shared/src/constants.rs` → `ORACLE_TIMEOUT_LEDGERS` |
+| Min-delay constant | `contracts/raffle-shared/src/constants.rs` → `RANDOMNESS_MIN_DELAY_LEDGERS` |
 | Internal prize cap | `contracts/raffle-shared/src/constants.rs` → `MAX_INTERNAL_RANDOMNESS_PRIZE_AMOUNT`; `contracts/raffle-shared/src/lib.rs` → `exceeds_internal_randomness_cap` |
 | Seed + strategies | `contracts/raffle-instance/src/randomness.rs` |
 | Finalize / oracle / fallback | `contracts/raffle-instance/src/draw.rs` |

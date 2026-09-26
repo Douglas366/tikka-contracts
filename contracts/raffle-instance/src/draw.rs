@@ -13,7 +13,10 @@ use crate::helpers::{
     revert_status, transition_status, transition_to_drawing, write_raffle,
 };
 use crate::randomness::{build_vrf_proof_message, derive_random_seed_from_proof};
-use crate::{CommitRevealEntry, DataKey, Error, RaffleStatus, ORACLE_TIMEOUT_LEDGERS};
+use crate::{
+    CommitRevealEntry, DataKey, Error, RaffleStatus, ORACLE_TIMEOUT_LEDGERS,
+    RANDOMNESS_MIN_DELAY_LEDGERS,
+};
 
 pub(crate) fn finalize_raffle(env: Env) -> Result<(), Error> {
     let drawing_lock: bool = env
@@ -219,7 +222,7 @@ pub(crate) fn provide_randomness(
         .instance()
         .get(&DataKey::RandomnessRequestLedger)
         .unwrap_or(0);
-    if env.ledger().sequence() < req_ledger + RANDOMNESS_MIN_DELAY_LEDGERS {
+    if env.ledger().sequence() < req_ledger.saturating_add(RANDOMNESS_MIN_DELAY_LEDGERS) {
         return Err(Error::RandomnessTooEarly);
     }
 
@@ -294,7 +297,7 @@ pub(crate) fn trigger_randomness_fallback(
         .instance()
         .get(&DataKey::RandomnessRequestLedger)
         .unwrap_or(0);
-    if env.ledger().sequence() < req_ledger + ORACLE_TIMEOUT_LEDGERS {
+    if env.ledger().sequence() < req_ledger.saturating_add(ORACLE_TIMEOUT_LEDGERS) {
         return Err(Error::FallbackTooEarly);
     }
 
