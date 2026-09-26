@@ -50,6 +50,7 @@ fn non_winner_cannot_claim() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -110,6 +111,7 @@ fn test_refund_guard_released_after_success() {
         unique_winners: false,
             metadata_hash: BytesN::from_array(&env, &[15; 32]),
         claim_lockup_seconds: 0,
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -174,6 +176,7 @@ fn test_claim_prize_deducts_protocol_fee() {
         metadata_hash: BytesN::from_array(&env, &[7; 32]),
         claim_lockup_seconds: None,
         swap_deadline_seconds: None,
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);

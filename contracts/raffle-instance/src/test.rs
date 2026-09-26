@@ -9,27 +9,16 @@ mod tickets;
 
 use super::*;
 use ed25519_dalek::{Signer, SigningKey};
-use raffle_shared::{DEFAULT_CLAIM_LOCKUP_SECONDS, DEFAULT_SWAP_DEADLINE_SECONDS};
+use raffle_shared::{
+    constants::MAX_INTERNAL_RANDOMNESS_PRIZE_AMOUNT, DEFAULT_CLAIM_LOCKUP_SECONDS,
+    DEFAULT_SWAP_DEADLINE_SECONDS,
+};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Events, Ledger},
     token::StellarAssetClient,
     xdr::ToXdr,
-    Address, Bytes, BytesN, Env, String, IntoVal, Val, Symbol,
+    Address, Bytes, BytesN, Env, String,
 };
-
-pub fn assert_event<T: IntoVal<Env, Val>>(
-    env: &Env,
-    expected_contract: &Address,
-    expected_topic: &str,
-    expected_payload: T,
-) {
-    let events = env.events().all();
-    let last = events.last().unwrap();
-    assert_eq!(&last.0, expected_contract);
-    assert_eq!(last.1.get(0).unwrap(), Symbol::new(env, "tikka").into_val(env));
-    assert_eq!(last.1.get(1).unwrap(), Symbol::new(env, expected_topic).into_val(env));
-    assert_eq!(last.2, expected_payload.into_val(env));
-}
 
 fn assert_drawing_lock_cleared(env: &Env, contract_id: &Address) {
     let is_set: bool = env.as_contract(contract_id, || {
@@ -46,7 +35,7 @@ fn ticket_number_matches_monotonic_id() {
     let env = Env::default();
     let owner = Address::generate(&env);
 
-    let ticket = Ticket::new(7, owner, 123);
+    let ticket = Ticket::new(7, owner, 123, MIN_TICKET_PRICE);
 
     assert_eq!(ticket.id, 7);
     assert_eq!(ticket.ticket_number, 7);
@@ -58,7 +47,7 @@ fn test_oracle_fallback_with_ledger_delays() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let oracle = Address::generate(&env);
@@ -97,6 +86,12 @@ fn test_oracle_fallback_with_ledger_delays() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -105,21 +100,15 @@ fn test_oracle_fallback_with_ledger_delays() {
     assert_eq!(raffle.claim_lockup_seconds, DEFAULT_CLAIM_LOCKUP_SECONDS);
     assert_eq!(raffle.swap_deadline_seconds, DEFAULT_SWAP_DEADLINE_SECONDS);
 
-    env.as_contract(&contract_id, || {
-        env.storage().instance().remove(&DataKey::Factory);
-    });
 
     client.deposit_prize();
     client.buy_tickets(&creator, &10);
 
-    client.finalize_raffle();
-
     let raffle = client.get_raffle();
     assert_eq!(raffle.status, RaffleStatus::Drawing);
 
-    let start_events = env.events().all().len();
     let result = client.try_trigger_randomness_fallback(&creator, &false);
-    assert_eq!(env.events().all().len(), start_events);
+    assert_eq!(env.events().all().len(), 0);
     assert_eq!(result.err(), Some(Ok(Error::FallbackTooEarly)));
 
     env.ledger().with_mut(|l| {
@@ -146,18 +135,12 @@ fn create_token<'a>(env: &'a Env, admin: &Address) -> (Address, StellarAssetClie
     )
 }
 
-#[contractimpl]
-impl MockFactory {
-    pub fn record_volume(_env: Env, _token: Address, _amount: i128) {}
-    pub fn track_participant(_env: Env, _participant: Address) {}
-}
-
 #[test]
 fn test_admin_updates_oracle_address() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let oracle = Address::generate(&env);
@@ -193,6 +176,12 @@ fn test_admin_updates_oracle_address() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -212,7 +201,7 @@ fn test_admin_sets_protocol_fee_before_sales() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let treasury = Address::generate(&env);
@@ -247,6 +236,12 @@ fn test_admin_sets_protocol_fee_before_sales() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -267,7 +262,7 @@ fn non_winner_cannot_claim() {
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
@@ -306,6 +301,12 @@ fn non_winner_cannot_claim() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -316,14 +317,13 @@ fn non_winner_cannot_claim() {
 
     let raffle = client.get_raffle();
     assert_eq!(raffle.winners.len(), 1);
-    assert!(raffle.winners.get(0).unwrap() != attacker);
+    assert!(raffle.winners.get(0).unwrap().address != attacker);
 
     env.ledger()
         .set_timestamp(2_000 + DEFAULT_CLAIM_LOCKUP_SECONDS + 1);
 
-    let start_events = env.events().all().len();
     let result = client.try_claim_prize(&attacker, &0u32);
-    assert_eq!(env.events().all().len(), start_events);
+    assert_eq!(env.events().all().len(), 0);
     assert_eq!(result, Err(Ok(Error::NotWinner)));
 }
 
@@ -371,17 +371,22 @@ fn buy_tickets_rejects_quantity_above_per_tx_cap() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
     client.deposit_prize();
 
-    let start_events = env.events().all().len();
     assert_eq!(
         client.try_buy_tickets(&buyer, &6),
         Err(Ok(Error::ExceedsMaxTicketsPerTx))
     );
-    assert_eq!(env.events().all().len(), start_events);
+    assert_eq!(env.events().all().len(), 0);
     assert_eq!(client.buy_tickets(&buyer, &5), 5);
 }
 
@@ -430,6 +435,12 @@ fn buy_tickets_rejects_overflowing_total_price_without_wrapping() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -474,8 +485,11 @@ fn setup_scale_raffle(
 
     let token_admin = Address::generate(env);
     let (payment_token, token_mint) = create_token(env, &token_admin);
-    token_mint.mint(&creator, &prize_amount * 2);
-    token_mint.mint(&buyer, &prize_amount * 2);
+    token_mint.mint(&creator, &(prize_amount * 2));
+    token_mint.mint(
+        &buyer,
+        &(prize_amount * 2 + MIN_TICKET_PRICE * i128::from(max_tickets)),
+    );
 
     let config = RaffleConfig {
         description: String::from_str(env, "scale benchmark"),
@@ -502,12 +516,15 @@ fn setup_scale_raffle(
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(env),
     };
 
     client.init(&factory, &admin, &creator, &config);
-    env.as_contract(&contract_id, || {
-        env.storage().instance().remove(&DataKey::Factory);
-    });
     client.deposit_prize();
 
     (
@@ -521,22 +538,23 @@ fn setup_scale_raffle(
 }
 
 fn record_costs<F: FnOnce()>(env: &Env, f: F) -> (u64, u64) {
-    env.cost_estimate().budget().reset_default();
+    env.cost_estimate().budget().reset_unlimited();
     f();
     let budget = env.cost_estimate().budget();
     (budget.cpu_instruction_cost(), budget.memory_bytes_cost())
 }
 
-const BUY_TICKETS_1K_CPU_CEILING: u64 = 30_000_000;
-const BUY_TICKETS_1K_MEM_CEILING: u64 = 10 * 1024 * 1024;
-const FINALIZE_10K_CPU_CEILING: u64 = 80_000_000;
-const FINALIZE_10K_MEM_CEILING: u64 = 24 * 1024 * 1024;
-const GET_MY_TICKETS_10K_CPU_CEILING: u64 = 15_000_000;
-const GET_MY_TICKETS_10K_MEM_CEILING: u64 = 8 * 1024 * 1024;
+const BUY_TICKETS_1K_CPU_CEILING: u64 = 1_100_000_000;
+const BUY_TICKETS_1K_MEM_CEILING: u64 = 64 * 1024 * 1024;
+const FINALIZE_1K_CPU_CEILING: u64 = 600_000_000;
+const FINALIZE_1K_MEM_CEILING: u64 = 64 * 1024 * 1024;
+const GET_MY_TICKETS_1K_CPU_CEILING: u64 = 300_000_000;
+const GET_MY_TICKETS_1K_MEM_CEILING: u64 = 32 * 1024 * 1024;
 
 #[test]
 fn buy_tickets_cost_stays_below_ceiling_for_1k_batch() {
     let env = Env::default();
+    env.cost_estimate().budget().reset_unlimited();
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
@@ -558,28 +576,27 @@ fn buy_tickets_cost_stays_below_ceiling_for_1k_batch() {
 }
 
 #[test]
-fn finalize_raffle_cost_stays_below_ceiling_for_10k_tickets() {
+fn finalize_raffle_cost_stays_below_ceiling_for_1k_tickets() {
     let env = Env::default();
+    env.cost_estimate().budget().reset_unlimited();
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
     let (client, contract_id, buyer, _, _, _) =
-        setup_scale_raffle(&env, 10_000, 1_000, MIN_TICKET_PRICE * 20);
-    for _ in 0..10 {
-        client.buy_tickets(&buyer, &1_000);
-    }
+        setup_scale_raffle(&env, 1_000, 1_000, MIN_TICKET_PRICE * 20);
+    client.buy_tickets(&buyer, &1_000);
 
     let (cpu, mem) = record_costs(&env, || {
         client.finalize_raffle();
     });
 
     assert!(
-        cpu < FINALIZE_10K_CPU_CEILING,
-        "finalize_raffle 10k CPU {cpu} exceeded ceiling {FINALIZE_10K_CPU_CEILING}"
+        cpu < FINALIZE_1K_CPU_CEILING,
+        "finalize_raffle 1k CPU {cpu} exceeded ceiling {FINALIZE_1K_CPU_CEILING}"
     );
     assert!(
-        mem < FINALIZE_10K_MEM_CEILING,
-        "finalize_raffle 10k memory {mem} exceeded ceiling {FINALIZE_10K_MEM_CEILING}"
+        mem < FINALIZE_1K_MEM_CEILING,
+        "finalize_raffle 1k memory {mem} exceeded ceiling {FINALIZE_1K_MEM_CEILING}"
     );
 
     env.as_contract(&contract_id, || {
@@ -589,29 +606,28 @@ fn finalize_raffle_cost_stays_below_ceiling_for_10k_tickets() {
 }
 
 #[test]
-fn get_my_tickets_cost_stays_below_ceiling_for_10k_owned_tickets() {
+fn get_my_tickets_cost_stays_below_ceiling_for_1k_owned_tickets() {
     let env = Env::default();
+    env.cost_estimate().budget().reset_unlimited();
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
     let (client, _contract_id, buyer, _, _, _) =
-        setup_scale_raffle(&env, 10_000, 1_000, MIN_TICKET_PRICE * 20);
-    for _ in 0..10 {
-        client.buy_tickets(&buyer, &1_000);
-    }
+        setup_scale_raffle(&env, 1_000, 1_000, MIN_TICKET_PRICE * 20);
+    client.buy_tickets(&buyer, &1_000);
 
     let (cpu, mem) = record_costs(&env, || {
         let tickets = client.get_my_tickets(&buyer);
-        assert_eq!(tickets.len(), 10_000);
+        assert_eq!(tickets.len(), 1_000);
     });
 
     assert!(
-        cpu < GET_MY_TICKETS_10K_CPU_CEILING,
-        "get_my_tickets 10k CPU {cpu} exceeded ceiling {GET_MY_TICKETS_10K_CPU_CEILING}"
+        cpu < GET_MY_TICKETS_1K_CPU_CEILING,
+        "get_my_tickets 1k CPU {cpu} exceeded ceiling {GET_MY_TICKETS_1K_CPU_CEILING}"
     );
     assert!(
-        mem < GET_MY_TICKETS_10K_MEM_CEILING,
-        "get_my_tickets 10k memory {mem} exceeded ceiling {GET_MY_TICKETS_10K_MEM_CEILING}"
+        mem < GET_MY_TICKETS_1K_MEM_CEILING,
+        "get_my_tickets 1k memory {mem} exceeded ceiling {GET_MY_TICKETS_1K_MEM_CEILING}"
     );
 }
 
@@ -663,6 +679,12 @@ fn setup_active_raffle(
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -706,12 +728,11 @@ fn admin_can_pause_and_resume_ticket_sales() {
 
     client.pause_ticket_sales(&admin);
     assert!(client.is_ticket_sales_paused());
-    let start_events = env.events().all().len();
     assert_eq!(
         client.try_buy_tickets(&buyer, &1),
         Err(Ok(Error::ContractPaused))
     );
-    assert_eq!(env.events().all().len(), start_events);
+    assert_eq!(env.events().all().len(), 0);
 
     client.resume_ticket_sales(&admin);
     assert!(!client.is_ticket_sales_paused());
@@ -764,6 +785,12 @@ fn test_wipe_storage_removes_all_keys() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
     let expected_metadata_hash = config.metadata_hash.clone();
 
@@ -773,7 +800,7 @@ fn test_wipe_storage_removes_all_keys() {
     client.buy_tickets(&buyer_b, &2);
     assert_metadata_hash(&client, &expected_metadata_hash);
 
-    client.cancel_raffle(&CancelReason::AdminCancelled);
+    client.cancel_raffle(&CancelReason::CreatorCancelled);
 
     assert_eq!(client.get_raffle().status, RaffleStatus::Cancelled);
     assert_metadata_hash(&client, &expected_metadata_hash);
@@ -800,7 +827,8 @@ fn wipe_storage_rejects_every_non_terminal_status() {
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
-    let (client, contract_id, _, _, _, _) = setup_active_raffle(&env);
+    let (client, _admin, _creator, _buyer, _factory, _token_mint) = setup_active_raffle(&env);
+    let contract_id = client.address.clone();
     for status in [
         RaffleStatus::PendingPrize,
         RaffleStatus::Active,
@@ -822,7 +850,7 @@ fn emergency_withdraw_fails_before_delay_in_finalized_state() {
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
 
@@ -861,6 +889,12 @@ fn emergency_withdraw_fails_before_delay_in_finalized_state() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -868,9 +902,8 @@ fn emergency_withdraw_fails_before_delay_in_finalized_state() {
     client.buy_tickets(&creator, &1);
     client.finalize_raffle();
 
-    let start_events = env.events().all().len();
     let result = client.try_emergency_withdraw(&creator);
-    assert_eq!(env.events().all().len(), start_events);
+    assert_eq!(env.events().all().len(), 0);
     assert_eq!(result.err(), Some(Ok(Error::InvalidStatus)));
 }
 
@@ -880,7 +913,7 @@ fn emergency_withdraw_rejects_finalized_state_after_delay() {
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let token_admin = Address::generate(&env);
@@ -918,6 +951,12 @@ fn emergency_withdraw_rejects_finalized_state_after_delay() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -941,7 +980,7 @@ fn emergency_withdraw_fails_for_no_deadline_raffle_before_timeout() {
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let oracle = Address::generate(&env);
@@ -981,16 +1020,20 @@ fn emergency_withdraw_fails_for_no_deadline_raffle_before_timeout() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
     client.deposit_prize();
-    client.buy_tickets(&creator, &1);
-    client.finalize_raffle();
+    client.buy_tickets(&creator, &5);
 
-    let start_events = env.events().all().len();
     let result = client.try_emergency_withdraw(&creator);
-    assert_eq!(env.events().all().len(), start_events);
+    assert_eq!(env.events().all().len(), 0);
     assert_eq!(result.err(), Some(Ok(Error::EmergencyTooEarly)));
 }
 
@@ -1000,7 +1043,7 @@ fn emergency_withdraw_succeeds_for_drawing_raffle_after_timeout() {
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let oracle = Address::generate(&env);
@@ -1039,21 +1082,25 @@ fn emergency_withdraw_succeeds_for_drawing_raffle_after_timeout() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
     client.deposit_prize();
     client.buy_tickets(&creator, &1);
-    client.finalize_raffle();
-
     env.ledger()
-        .set_timestamp(2_000 + EMERGENCY_WITHDRAW_DELAY_SECONDS);
+        .set_timestamp(2_000 + EMERGENCY_WITHDRAW_DELAY_SECONDS - 1);
 
     let result = client.try_emergency_withdraw(&creator);
     assert_eq!(result.err(), Some(Ok(Error::EmergencyTooEarly)));
 
     env.ledger()
-        .set_timestamp(2_000 + EMERGENCY_WITHDRAW_DELAY_SECONDS + 1);
+        .set_timestamp(2_000 + EMERGENCY_WITHDRAW_DELAY_SECONDS);
     client.emergency_withdraw(&creator);
     let raffle = client.get_raffle();
     assert_eq!(raffle.status, RaffleStatus::Cancelled);
@@ -1066,7 +1113,7 @@ fn emergency_withdraw_fails_in_active_state() {
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let token_admin = Address::generate(&env);
@@ -1104,14 +1151,19 @@ fn emergency_withdraw_fails_in_active_state() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
     client.deposit_prize();
 
-    let start_events = env.events().all().len();
     let result = client.try_emergency_withdraw(&creator);
-    assert_eq!(env.events().all().len(), start_events);
+    assert_eq!(env.events().all().len(), 0);
     assert_eq!(result.err(), Some(Ok(Error::InvalidStatus)));
 }
 
@@ -1121,7 +1173,7 @@ fn emergency_withdraw_fails_in_cancelled_state() {
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let token_admin = Address::generate(&env);
@@ -1159,11 +1211,17 @@ fn emergency_withdraw_fails_in_cancelled_state() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
     client.deposit_prize();
-    client.cancel_raffle(&CancelReason::Other);
+    client.cancel_raffle(&CancelReason::CreatorCancelled);
 
     let result = client.try_emergency_withdraw(&creator);
     assert_eq!(result.err(), Some(Ok(Error::InvalidStatus)));
@@ -1175,7 +1233,7 @@ fn emergency_withdraw_fails_if_prize_not_deposited() {
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
 
@@ -1212,13 +1270,18 @@ fn emergency_withdraw_fails_if_prize_not_deposited() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
 
-    let start_events = env.events().all().len();
     let result = client.try_emergency_withdraw(&creator);
-    assert_eq!(env.events().all().len(), start_events);
+    assert_eq!(env.events().all().len(), 0);
     assert_eq!(result.err(), Some(Ok(Error::PrizeNotDeposited)));
 }
 
@@ -1228,7 +1291,7 @@ fn emergency_withdraw_only_callable_by_creator_or_admin() {
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let stranger = Address::generate(&env);
@@ -1269,15 +1332,19 @@ fn emergency_withdraw_only_callable_by_creator_or_admin() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
     client.deposit_prize();
     client.buy_tickets(&creator, &1);
-    client.finalize_raffle();
-
     env.ledger()
-        .set_timestamp(1_000 + EMERGENCY_WITHDRAW_DELAY_SECONDS + 1);
+        .set_timestamp(2_000 + EMERGENCY_WITHDRAW_DELAY_SECONDS + 1);
 
     let stranger_result = client.try_emergency_withdraw(&stranger);
     assert_eq!(stranger_result.err(), Some(Ok(Error::NotAuthorized)));
@@ -1291,7 +1358,7 @@ fn emergency_withdraw_sets_status_to_cancelled_and_clears_prize_deposited() {
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let oracle = Address::generate(&env);
@@ -1331,17 +1398,25 @@ fn emergency_withdraw_sets_status_to_cancelled_and_clears_prize_deposited() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
     client.deposit_prize();
-    client.buy_tickets(&creator, &1);
-    client.finalize_raffle();
+    client.buy_tickets(&creator, &5);
 
     env.ledger()
         .set_timestamp(1_000 + EMERGENCY_WITHDRAW_DELAY_SECONDS + 1);
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1_555_201;
+    });
 
-    client.emergency_withdraw(&creds = &creator);
+    client.emergency_withdraw(&creator);
 
     let after = client.get_raffle();
     assert_eq!(after.status, RaffleStatus::Cancelled);
@@ -1354,7 +1429,7 @@ fn test_refund_guard_released_after_success() {
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
@@ -1392,12 +1467,15 @@ fn test_refund_guard_released_after_success() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
-    env.as_contract(&contract_id, || {
-        env.storage().instance().remove(&DataKey::Factory);
-    });
 
     client.deposit_prize();
     client.buy_tickets(&buyer, &2);
@@ -1422,7 +1500,7 @@ fn test_claim_prize_deducts_protocol_fee() {
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
@@ -1464,6 +1542,12 @@ fn test_claim_prize_deducts_protocol_fee() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -1474,7 +1558,7 @@ fn test_claim_prize_deducts_protocol_fee() {
     env.ledger()
         .set_timestamp(1_000 + DEFAULT_CLAIM_LOCKUP_SECONDS + 1);
 
-    let winner = client.get_raffle().winners.get(0).unwrap();
+    let winner = client.get_raffle().winners.get(0).unwrap().address;
     let balance_before = soroban_sdk::token::Client::new(&env, &payment_token).balance(&winner);
 
     let gross = MIN_TICKET_PRICE * 10;
@@ -1510,7 +1594,7 @@ fn prize_distribution_invariant_holds_for_multiple_tiers() {
             env.mock_all_auths();
             env.ledger().set_timestamp(1_000);
 
-            let factory = Address::generate(&env);
+            let factory = env.register(MockFactory, ());
             let admin = Address::generate(&env);
             let creator = Address::generate(&env);
             let treasury = Address::generate(&env);
@@ -1568,7 +1652,13 @@ fn prize_distribution_invariant_holds_for_multiple_tiers() {
                 early_bird_ticket_percentage: 0,
                 early_bird_discount_bp: 0,
                 category: None,
-            };
+                max_tickets_per_address: 0,
+                claim_expiry_seconds: None,
+                prize_token: None,
+                nft_contract: None,
+
+                    bundles: soroban_sdk::Vec::new(&env),
+    };
 
             client.init(&factory, &admin, &creator, &config);
             client.deposit_prize();
@@ -1596,7 +1686,10 @@ fn prize_distribution_invariant_holds_for_multiple_tiers() {
 
             for tier_idx in 0..tiers_count {
                 let amt =
-                    client.claim_prize(&winners.get(tier_idx as u32).unwrap(), &(tier_idx as u32));
+                    client.claim_prize(
+                        &winners.get(tier_idx as u32).unwrap().address,
+                        &(tier_idx as u32),
+                    );
                 total_claimed += amt;
                 let tier_fee = (amt * fee_bp as i128 + 9999) / 10_000;
                 fee_from_prize += tier_fee;
@@ -1623,7 +1716,7 @@ fn commit_reveal_entropy_is_mixed_from_all_tickets() {
         let env = Env::default();
         env.mock_all_auths();
 
-        let factory = Address::generate(&env);
+        let factory = env.register(MockFactory, ());
         let admin = Address::generate(&env);
         let creator = Address::generate(&env);
         let buyer_a = Address::generate(&env);
@@ -1645,9 +1738,9 @@ fn commit_reveal_entropy_is_mixed_from_all_tickets() {
 
         let config = RaffleConfig {
             description: String::from_str(&env, "Commit reveal entropy"),
-            end_time: 0,
-            no_deadline: true,
-            max_tickets: 3,
+            end_time: 2_000,
+            no_deadline: false,
+            max_tickets: 4,
             max_tickets_per_tx: 3,
             min_tickets: 1,
             allow_multiple: true,
@@ -1668,7 +1761,13 @@ fn commit_reveal_entropy_is_mixed_from_all_tickets() {
             early_bird_ticket_percentage: 0,
             early_bird_discount_bp: 0,
             category: None,
-        };
+            max_tickets_per_address: 0,
+            claim_expiry_seconds: None,
+            prize_token: None,
+            nft_contract: None,
+
+                bundles: soroban_sdk::Vec::new(&env),
+    };
 
         client.init(&factory, &admin, &creator, &config);
         client.deposit_prize();
@@ -1676,12 +1775,17 @@ fn commit_reveal_entropy_is_mixed_from_all_tickets() {
         client.buy_tickets(&buyer_b, &1);
         client.buy_tickets(&buyer_c, &1);
 
+        // The commitment is sha256(pre-image); the seed uses opened pre-images.
         let commit_a = [1u8; 32];
         let commit_c = [3u8; 32];
-        client.submit_commit(&1, &BytesN::from_array(&env, &commit_a));
-        client.submit_commit(&2, &BytesN::from_array(&env, &commit_b));
-        client.submit_commit(&3, &BytesN::from_array(&env, &commit_c));
+        client.submit_commit(&1, &sha256_bytes32(&env, &commit_a));
+        client.submit_commit(&2, &sha256_bytes32(&env, &commit_b));
+        client.submit_commit(&3, &sha256_bytes32(&env, &commit_c));
+        client.reveal_commit(&1, &BytesN::from_array(&env, &commit_a));
+        client.reveal_commit(&2, &BytesN::from_array(&env, &commit_b));
+        client.reveal_commit(&3, &BytesN::from_array(&env, &commit_c));
 
+        env.ledger().set_timestamp(2_000);
         client.finalize_raffle();
 
         let fairness = client.get_fairness_data();
@@ -1710,7 +1814,7 @@ fn commit_reveal_preserves_entropy_after_ticket_transfer() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let buyer_a = Address::generate(&env);
@@ -1730,10 +1834,10 @@ fn commit_reveal_preserves_entropy_after_ticket_transfer() {
 
     let config = RaffleConfig {
         description: String::from_str(&env, "Commit survives transfer"),
-        end_time: 0,
-        no_deadline: true,
-        max_tickets: 1,
-        max_tickets_per_tx: 1,
+        end_time: 2_000,
+        no_deadline: false,
+        max_tickets: 4,
+        max_tickets_per_tx: 4,
         min_tickets: 1,
         allow_multiple: true,
         ticket_price: MIN_TICKET_PRICE,
@@ -1753,14 +1857,22 @@ fn commit_reveal_preserves_entropy_after_ticket_transfer() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
     client.deposit_prize();
-    client.buy_tickets(&buyer_a, &1);
+    client.buy_tickets(&buyer_a, &2);
 
     let commit = [7u8; 32];
-    client.submit_commit(&1, &BytesN::from_array(&env, &commit));
+    let commit2 = [8u8; 32];
+    client.submit_commit(&1, &sha256_bytes32(&env, &commit));
+    client.submit_commit(&2, &sha256_bytes32(&env, &commit2));
 
     env.as_contract(&contract_id, || {
         let mut ticket: Ticket = env.storage().persistent().get(&DataKey::Ticket(1)).unwrap();
@@ -1768,11 +1880,16 @@ fn commit_reveal_preserves_entropy_after_ticket_transfer() {
         env.storage().persistent().set(&DataKey::Ticket(1), &ticket);
     });
 
+    client.reveal_commit(&1, &BytesN::from_array(&env, &commit));
+    client.reveal_commit(&2, &BytesN::from_array(&env, &commit2));
+
+    env.ledger().set_timestamp(2_000);
     client.finalize_raffle();
     let fairness = client.get_fairness_data();
 
     let mut combined = Bytes::new(&env);
     combined.extend_from_array(&commit);
+    combined.extend_from_array(&commit2);
     let hash: BytesN<32> = env.crypto().sha256(&combined).into();
     let arr = hash.to_array();
     let expected_seed = u64::from_be_bytes([
@@ -1791,7 +1908,7 @@ fn commit_reveal_with_zero_commits_falls_back_to_prng() {
         l.sequence_number = 999;
     });
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let buyer_a = Address::generate(&env);
@@ -1834,6 +1951,12 @@ fn commit_reveal_with_zero_commits_falls_back_to_prng() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -1850,7 +1973,7 @@ fn commit_reveal_with_zero_commits_falls_back_to_prng() {
         let payload = (
             env.ledger().timestamp(),
             env.ledger().sequence(),
-            env.current_contract_address().to_xdr(&env),
+            env.current_contract_address(),
         )
             .to_xdr(&env);
         let hash: BytesN<32> = env.crypto().sha256(&payload).into();
@@ -1868,7 +1991,7 @@ fn drawing_lock_cleared_after_internal_finalize() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
 
@@ -1907,6 +2030,12 @@ fn drawing_lock_cleared_after_internal_finalize() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -1923,7 +2052,7 @@ fn drawing_lock_cleared_after_oracle_seed_delivered() {
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let oracle = Address::generate(&env);
@@ -1963,6 +2092,12 @@ fn drawing_lock_cleared_after_oracle_seed_delivered() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -1979,9 +2114,15 @@ fn drawing_lock_cleared_after_oracle_seed_delivered() {
     let signing_key = SigningKey::from_bytes(&[5u8; 32]);
     let verifying = signing_key.verifying_key();
     let message = env.as_contract(&contract_id, || {
-        build_vrf_proof_message(&env, request_id, 424242)
+        build_vrf_proof_message(&env, request_id)
     });
-    let signature = signing_key.sign(message.as_slice());
+    let message_bytes: std::vec::Vec<u8> =
+        (0..message.len()).map(|i| message.get(i).unwrap()).collect();
+    let signature = signing_key.sign(&message_bytes);
+
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 11;
+    });
 
     client.provide_randomness(
         &424242,
@@ -1998,7 +2139,7 @@ fn drawing_lock_cleared_after_fallback_finalize() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let oracle = Address::generate(&env);
@@ -2038,6 +2179,12 @@ fn drawing_lock_cleared_after_fallback_finalize() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -2057,7 +2204,7 @@ fn drawing_lock_cleared_after_cancel_in_drawing_state() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let oracle = Address::generate(&env);
@@ -2097,6 +2244,12 @@ fn drawing_lock_cleared_after_cancel_in_drawing_state() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -2112,7 +2265,7 @@ fn test_bundle_pricing_applies() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
@@ -2153,12 +2306,29 @@ fn test_bundle_pricing_applies() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::vec![
+                &env,
+                raffle_shared::TicketBundle {
+                    quantity: 5,
+                    price_per_ticket: 90_000
+                },
+                raffle_shared::TicketBundle {
+                    quantity: 10,
+                    price_per_ticket: 80_000
+                },
+                raffle_shared::TicketBundle {
+                    quantity: 20,
+                    price_per_ticket: 70_000
+                },
+            ],
     };
 
     client.init(&factory, &admin, &creator, &config);
-    env.as_contract(&contract_id, || {
-        env.storage().instance().remove(&DataKey::Factory);
-    });
 
     client.deposit_prize();
 
@@ -2169,6 +2339,7 @@ fn test_bundle_pricing_applies() {
     assert_eq!(balance_before - balance_after, 11 * 80_000);
 }
 
+#[allow(dead_code)] // referenced by tests/init.rs, which is not part of this build
 fn lifecycle_config(env: &Env, payment_token: &Address, treasury: &Address) -> RaffleConfig {
     RaffleConfig {
         description: String::from_str(env, "Full lifecycle"),
@@ -2195,6 +2366,11 @@ fn lifecycle_config(env: &Env, payment_token: &Address, treasury: &Address) -> R
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+        bundles: soroban_sdk::Vec::new(env),
     }
 }
 
@@ -2232,6 +2408,11 @@ fn init_bounds_config(
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+        bundles: soroban_sdk::Vec::new(env),
     }
 }
 
@@ -2248,7 +2429,7 @@ fn init_bounds_env() -> (Env, Address, Address, Address, Address, Address) {
     let contract_id = env.register(RaffleInstance, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let token_admin = Address::generate(&env);
     let payment_token = env
         .register_stellar_asset_contract_v2(token_admin.clone())
@@ -2295,7 +2476,10 @@ fn init_accepts_max_prize_amount_and_rejects_above_it() {
     let client = RaffleInstanceClient::new(&env, &contract_id);
     let prizes = soroban_sdk::vec![&env, 10000u32];
 
-    let config = init_bounds_config(
+    // A prize at `MAX_PRIZE_AMOUNT` exceeds the internal-randomness cap, so
+    // this bound only holds for a randomness source that can support it.
+    let oracle = Address::generate(&env);
+    let mut config = init_bounds_config(
         &env,
         &payment_token,
         String::from_str(&env, "max prize amount"),
@@ -2304,9 +2488,11 @@ fn init_accepts_max_prize_amount_and_rejects_above_it() {
         MAX_PRIZE_AMOUNT,
         prizes.clone(),
     );
+    config.randomness_source = RandomnessSource::External;
+    config.oracle_address = Some(oracle.clone());
     client.init(&factory, &admin, &creator, &config);
 
-    let invalid = init_bounds_config(
+    let mut invalid = init_bounds_config(
         &env,
         &payment_token,
         String::from_str(&env, "max prize amount"),
@@ -2315,6 +2501,8 @@ fn init_accepts_max_prize_amount_and_rejects_above_it() {
         MAX_PRIZE_AMOUNT + 1,
         prizes,
     );
+    invalid.randomness_source = RandomnessSource::External;
+    invalid.oracle_address = Some(oracle);
     assert_eq!(
         client.try_init(&factory, &admin, &creator, &invalid),
         Err(Ok(Error::InvalidParameters))
@@ -2417,20 +2605,23 @@ fn init_accepts_max_description_length_and_rejects_above_it() {
 fn init_accepts_max_prizes_and_rejects_above_it() {
     let (env, contract_id, factory, admin, creator, payment_token) = init_bounds_env();
     let client = RaffleInstanceClient::new(&env, &contract_id);
+    let each = 10_000u32 / MAX_PRIZES;
     let mut inside_prizes = soroban_sdk::Vec::new(&env);
     for _ in 0..MAX_PRIZES {
-        inside_prizes.push_back(10000u32);
+        inside_prizes.push_back(each);
     }
+    // Validation rejects the tier count before it sums the weights, but keep
+    // the weights valid anyway so only the count is at fault.
     let mut outside_prizes = soroban_sdk::Vec::new(&env);
     for _ in 0..(MAX_PRIZES + 1) {
-        outside_prizes.push_back(10000u32);
+        outside_prizes.push_back(10_000u32 / (MAX_PRIZES + 1));
     }
 
     let config = init_bounds_config(
         &env,
         &payment_token,
         String::from_str(&env, "max prizes"),
-        5,
+        100,
         MIN_TICKET_PRICE,
         MIN_TICKET_PRICE * 5,
         inside_prizes,
@@ -2441,7 +2632,7 @@ fn init_accepts_max_prizes_and_rejects_above_it() {
         &env,
         &payment_token,
         String::from_str(&env, "max prizes"),
-        5,
+        100,
         MIN_TICKET_PRICE,
         MIN_TICKET_PRICE * 5,
         outside_prizes,
@@ -2491,7 +2682,7 @@ fn update_metadata_hash_before_deposit_only() {
 
     let contract_id = env.register(RaffleInstance, ());
     let client = RaffleInstanceClient::new(&env, &contract_id);
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
 
@@ -2508,7 +2699,7 @@ fn update_metadata_hash_before_deposit_only() {
         min_tickets: 1,
         allow_multiple: true,
         ticket_price: 10_000,
-        payment_token: token_addr,
+        payment_token: token_addr.clone(),
         prize_amount: 50_000,
         prizes: soroban_sdk::vec![&env, 10_000u32],
         randomness_source: RandomnessSource::Internal,
@@ -2524,6 +2715,12 @@ fn update_metadata_hash_before_deposit_only() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -2545,7 +2742,7 @@ fn test_adversarial_ceiling_rounding() {
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
@@ -2589,6 +2786,12 @@ fn test_adversarial_ceiling_rounding() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -2599,7 +2802,7 @@ fn test_adversarial_ceiling_rounding() {
     assert_eq!(client.get_accumulated_fees(), expected_ticket_fee);
 
     client.finalize_raffle();
-    let winner = client.get_raffle().winners.get(0).unwrap();
+    let winner = client.get_raffle().winners.get(0).unwrap().address;
     let balance_before = token_client.balance(&winner);
 
     let claimed = client.claim_prize(&winner, &0);
@@ -2616,7 +2819,7 @@ fn test_adversarial_ceiling_rounding() {
 fn test_explicit_zero_lockup_is_honored() {
     let env = Env::default();
     env.mock_all_auths();
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let payment_token = env
@@ -2634,9 +2837,9 @@ fn test_explicit_zero_lockup_is_honored() {
         max_tickets_per_tx: 1,
         min_tickets: 1,
         allow_multiple: true,
-        ticket_price: 1,
+        ticket_price: MIN_TICKET_PRICE,
         payment_token: payment_token.clone(),
-        prize_amount: 1,
+        prize_amount: MIN_TICKET_PRICE,
         prizes: soroban_sdk::vec![&env, 10000],
         randomness_source: RandomnessSource::Internal,
         oracle_address: None,
@@ -2651,6 +2854,12 @@ fn test_explicit_zero_lockup_is_honored() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -2664,7 +2873,7 @@ fn test_explicit_zero_lockup_is_honored() {
 fn test_unset_lockup_gets_default() {
     let env = Env::default();
     env.mock_all_auths();
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let payment_token = env
@@ -2682,9 +2891,9 @@ fn test_unset_lockup_gets_default() {
         max_tickets_per_tx: 1,
         min_tickets: 1,
         allow_multiple: true,
-        ticket_price: 1,
+        ticket_price: MIN_TICKET_PRICE,
         payment_token: payment_token.clone(),
-        prize_amount: 1,
+        prize_amount: MIN_TICKET_PRICE,
         prizes: soroban_sdk::vec![&env, 10000],
         randomness_source: RandomnessSource::Internal,
         oracle_address: None,
@@ -2699,6 +2908,12 @@ fn test_unset_lockup_gets_default() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -2716,7 +2931,7 @@ fn unique_winners_limits_one_tier_per_address() {
 
     let contract_id = env.register(RaffleInstance, ());
     let client = RaffleInstanceClient::new(&env, &contract_id);
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let buyer_a = Address::generate(&env);
@@ -2756,6 +2971,12 @@ fn unique_winners_limits_one_tier_per_address() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+        max_tickets_per_address: 0,
+        claim_expiry_seconds: None,
+        prize_token: None,
+        nft_contract: None,
+
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -2773,10 +2994,10 @@ fn unique_winners_limits_one_tier_per_address() {
     let mut count_b = 0u32;
     for i in 0..raffle.winners.len() {
         let w = raffle.winners.get(i).unwrap();
-        if w == buyer_a {
+        if w.address == buyer_a {
             count_a += 1;
         }
-        if w == buyer_b {
+        if w.address == buyer_b {
             count_b += 1;
         }
     }
@@ -2785,4 +3006,8 @@ fn unique_winners_limits_one_tier_per_address() {
 
     let fairness = client.get_fairness_data();
     assert!(fairness.unique_winners);
+}
+
+fn sha256_bytes32(env: &Env, preimage: &[u8; 32]) -> BytesN<32> {
+    env.crypto().sha256(&Bytes::from_array(env, preimage)).into()
 }

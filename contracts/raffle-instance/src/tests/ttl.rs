@@ -1,8 +1,10 @@
 //! Tests for TTL management and amortised bumping.
-
 #[cfg(test)]
 mod tests {
-    use soroban_sdk::{Env, testutils::Ledger};
+    use soroban_sdk::{
+        testutils::{storage::{Instance as _, Persistent as _}, Ledger},
+        Env,
+    };
     use crate::helpers::bump_raffle_ttl;
     use crate::DataKey;
 

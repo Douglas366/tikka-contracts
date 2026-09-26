@@ -1,8 +1,5 @@
 use proptest::prelude::*;
-use crate::{
-    assert_solvent, calculate_tier_prize, DataKey, Raffle, RaffleStatus, Ticket, MAX_PRIZE_AMOUNT,
-    MIN_TICKET_PRICE,
-};
+use crate::{calculate_tier_prize, Raffle, RaffleStatus, MAX_PRIZE_AMOUNT, MIN_TICKET_PRICE};
 use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Vec};
 
 fn valid_prize_weights() -> impl Strategy<Value = std::vec::Vec<u32>> {
@@ -42,7 +39,6 @@ fn test_raffle(env: &Env, weights: &[u32], prize_amount: i128) -> Raffle {
         status: RaffleStatus::PendingPrize,
         prize_deposited: false,
         winners: Vec::new(env),
-        claimed_winners: Vec::new(env),
         randomness_source: raffle_shared::RandomnessSource::Internal,
         oracle_address: None,
         protocol_fee_bp: 0,
@@ -59,6 +55,7 @@ fn test_raffle(env: &Env, weights: &[u32], prize_amount: i128) -> Raffle {
         metadata_hash: BytesN::from_array(env, &[1; 32]),
         unique_winners: false,
         nft_contract: None,
+        bundles: Vec::new(env),
     }
 }
 
@@ -113,6 +110,7 @@ fn final_tier_absorbs_maximum_rounding_dust() {
 /// Called by the refund-path lifecycle tests (`tests/claim.rs`) after every
 /// refund/prize-recovery operation, and asserted inline by the fuzz harness
 /// (`fuzz/fuzz_targets/real_harness.rs::refund_cancel`).
+#[allow(dead_code)]
 pub fn assert_refund_solvency(
     env: &Env,
     contract_id: &Address,

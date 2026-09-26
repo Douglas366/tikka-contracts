@@ -8,6 +8,7 @@ use soroban_sdk::{
 use crate::events::{RaffleFinalized, RaffleStatusChanged, WinnerDrawn};
 use crate::randomness::OracleSeedWinnerSelection;
 use crate::{DataKey, Error, FairnessMetadata, Raffle, RaffleStatus, RandomnessType, Ticket};
+use raffle_shared::BuyQuote;
 
 pub(crate) fn read_raffle(env: &Env) -> Result<Raffle, Error> {
     env.storage()
@@ -18,34 +19,6 @@ pub(crate) fn read_raffle(env: &Env) -> Result<Raffle, Error> {
 
 pub(crate) fn write_raffle(env: &Env, raffle: &Raffle) {
     env.storage().instance().set(&DataKey::Raffle, raffle);
-}
-
-pub(crate) fn calculate_buy_quote(raffle: &Raffle, quantity: u32) -> Result<BuyQuote, Error> {
-    if quantity == 0 {
-        return Err(Error::InvalidQuantity);
-    }
-    let gross = raffle
-        .ticket_price
-        .checked_mul(quantity as i128)
-        .ok_or(Error::ArithmeticOverflow)?;
-    let discount = if raffle.early_bird_ticket_percentage > 0
-        && raffle.tickets_sold < raffle.max_tickets * raffle.early_bird_ticket_percentage / 100
-    {
-        gross
-            .checked_mul(raffle.early_bird_discount_bp as i128)
-            .ok_or(Error::ArithmeticOverflow)?
-            / 10_000
-    } else {
-        0
-    };
-    let net = gross.checked_sub(discount).ok_or(Error::ArithmeticOverflow)?;
-    let fee = net
-        .checked_mul(raffle.protocol_fee_bp as i128)
-        .ok_or(Error::ArithmeticOverflow)?
-        / 10_000;
-    let net_to_pay = net.checked_add(fee).ok_or(Error::ArithmeticOverflow)?;
-    let effective_ticket_price = net / quantity as i128;
-    Ok(BuyQuote { gross, discount, fee, net_to_pay, effective_ticket_price })
 }
 
 fn resolve_unique_winner(
@@ -65,13 +38,6 @@ fn resolve_unique_winner(
         }
     }
     candidate
-}
-
-pub(crate) fn bump_raffle_ttl(env: &Env, _total_tickets: u32) {
-    env.storage().instance().extend_ttl(
-        INSTANCE_TTL_THRESHOLD_LEDGERS,
-        INSTANCE_TTL_BUMP_LEDGERS,
-    );
 }
 
 /// Checked lifecycle transition. All status writes must go through this helper
@@ -206,6 +172,63 @@ pub(crate) fn request_randomness(env: &Env) -> Result<u64, Error> {
     Ok(request_id)
 }
 
+/// Shared lifecycle guard for both randomness callbacks (#987).
+///
+/// Requires that the raffle is in the drawing phase, that the drawing lock is
+/// held, that a randomness request is pending for `request_id`, and that the
+/// supplied `request_id` is the one on record.  Used by
+/// [`provide_randomness`](crate::draw::provide_randomness) and
+/// [`provide_quorum_randomness`](crate::draw::provide_quorum_randomness) so
+/// the two paths cannot drift apart on lifecycle checks.
+///
+/// # Errors
+///
+/// - [`Error::InvalidStateTransition`] — the raffle is not drawing (for
+///   example the draw already finalized, or a further seed is submitted after
+///   finalization).
+/// - [`Error::DrawingNotStarted`] — the drawing lock is not held.
+/// - [`Error::NoRandomnessRequest`] — no request is pending.
+/// - [`Error::InvalidParameters`] — `request_id` does not match the pending
+///   request.
+pub(crate) fn require_awaiting_randomness(
+    env: &Env,
+    raffle: &Raffle,
+    request_id: u64,
+) -> Result<(), Error> {
+    if raffle.status != RaffleStatus::Drawing {
+        return Err(Error::InvalidStateTransition);
+    }
+
+    let drawing_lock: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey::DrawingLock)
+        .unwrap_or(false);
+    if !drawing_lock {
+        return Err(Error::DrawingNotStarted);
+    }
+
+    let pending: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey::RandomnessRequested)
+        .unwrap_or(false);
+    if !pending {
+        return Err(Error::NoRandomnessRequest);
+    }
+
+    let stored: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::RandomnessRequestId)
+        .ok_or(Error::NoRandomnessRequest)?;
+    if stored != request_id {
+        return Err(Error::InvalidParameters);
+    }
+
+    Ok(())
+}
+
 pub(crate) fn transition_to_drawing(
     env: &Env,
     raffle: &mut Raffle,
@@ -287,61 +310,6 @@ pub(crate) fn validate_token_address(env: &Env, token_address: &Address) -> Resu
     Ok(())
 }
 
-/// Compute the full pricing breakdown for buying `quantity` tickets.
-///
-/// Applies the early-bird discount when `raffle.tickets_sold` is below the
-/// configured threshold and returns the gross, discount, fee, net charge, and
-/// effective per-ticket price.  Both `buy_tickets` and `preview_buy` route
-/// through this function so quote and execution cannot diverge.
-pub(crate) fn calculate_buy_quote(raffle: &Raffle, quantity: u32) -> Result<BuyQuote, Error> {
-    if quantity == 0 {
-        return Err(Error::InvalidQuantity);
-    }
-
-    let gross = raffle
-        .ticket_price
-        .checked_mul(quantity as i128)
-        .ok_or(Error::ArithmeticOverflow)?;
-
-    let discount = if raffle.early_bird_discount_bp > 0
-        && raffle.early_bird_ticket_percentage > 0
-    {
-        let threshold = (raffle.max_tickets as u64)
-            .checked_mul(raffle.early_bird_ticket_percentage as u64)
-            .ok_or(Error::ArithmeticOverflow)?
-            / 100;
-        if (raffle.tickets_sold as u64) < threshold {
-            gross
-                .checked_mul(raffle.early_bird_discount_bp as i128)
-                .ok_or(Error::ArithmeticOverflow)?
-                / 10000
-        } else {
-            0
-        }
-    } else {
-        0
-    };
-
-    let net_to_pay = gross
-        .checked_sub(discount)
-        .ok_or(Error::ArithmeticOverflow)?;
-
-    let fee = net_to_pay
-        .checked_mul(raffle.protocol_fee_bp as i128)
-        .ok_or(Error::ArithmeticOverflow)?
-        / 10000;
-
-    let effective_ticket_price = net_to_pay / (quantity as i128);
-
-    Ok(BuyQuote {
-        gross,
-        discount,
-        fee,
-        net_to_pay,
-        effective_ticket_price,
-    })
-}
-
 pub(crate) fn build_internal_seed_u64(env: &Env) -> u64 {
     let xdr = (
         env.ledger().timestamp(),
@@ -372,7 +340,7 @@ pub(crate) fn calculate_tier_prize(raffle: &Raffle, tier_index: u32) -> Result<i
                 .prize_amount
                 .checked_mul(bp as i128)
                 .ok_or(Error::ArithmeticOverflow)?
-                .checked_add(allocated)
+                .checked_div(10_000)
                 .ok_or(Error::ArithmeticOverflow)?;
             allocated = allocated
                 .checked_add(amt)
@@ -390,17 +358,8 @@ pub(crate) fn calculate_tier_prize(raffle: &Raffle, tier_index: u32) -> Result<i
             .ok_or(Error::ArithmeticOverflow)
             .map(|a| a / 10000)
     }
-    let bp = raffle.prizes.get(tier_index).ok_or(Error::InvalidIndex)?;
-    raffle
-        .prize_amount
-        .checked_mul(bp as i128)
-        .ok_or(Error::ArithmeticOverflow)
-        .map(|a| a / 10000)
 }
-        fix/bump-raffle-ttl-746
 
-
-        master
 /// Finalize the raffle using a pre-computed `u64` seed.
 ///
 /// This is the common finalization path shared by all three randomness modes
@@ -465,11 +424,13 @@ pub(crate) fn do_finalize_with_seed(
     }
 
     let selector = OracleSeedWinnerSelection::new(seed);
-    let mut winning_ticket_ids =
+    // `winning_indices` holds zero-based positions into the ticket pool. They
+    // are stored verbatim in FairnessMetadata and in the RaffleFinalized event
+    // so off-chain verifiers can replay the draw; the public WinnerDrawn event
+    // emits the 1-indexed ticket ID (`position + 1`).
+    let mut winning_indices =
         selector.select_winner_indices(env, total_tickets, raffle.prizes.len());
-    let mut winners = Vec::new(env);
-    // 1-indexed ticket IDs emitted in events and stored in RaffleFinalized.
-    let mut winning_ticket_ids_1indexed: Vec<u32> = Vec::new(env);
+    let mut winners: Vec<Address> = Vec::new(env);
 
     for i in 0..winning_indices.len() {
         let mut idx = winning_indices.get(i).ok_or(Error::InvalidIndex)?;
@@ -478,13 +439,9 @@ pub(crate) fn do_finalize_with_seed(
             winning_indices.set(i, idx);
         }
         let owner = get_ticket_owner(env, idx + 1).ok_or(Error::TicketNotFound)?;
-        winners.push_back(crate::Winner {
-            address: owner.clone(),
-            claimed: false,
-            prize_index: i as u32,
-        });
+        winners.push_back(owner.clone());
         WinnerDrawn {
-            winner,
+            winner: owner,
             ticket_id: idx + 1,
             tier_index: i,
             timestamp: env.ledger().timestamp(),
@@ -497,7 +454,7 @@ pub(crate) fn do_finalize_with_seed(
         &FairnessMetadata {
             seed,
             randomness_source: raffle.randomness_source.clone(),
-            winning_ticket_indices: winning_ticket_ids.clone(),
+            winning_ticket_indices: winning_indices.clone(),
             draw_timestamp: env.ledger().timestamp(),
             draw_sequence: env.ledger().sequence(),
             unique_winners: raffle.unique_winners,
@@ -532,18 +489,18 @@ pub(crate) fn do_finalize_with_seed(
     env.storage()
         .instance()
         .remove(&DataKey::RandomnessRequestLedger);
-    clear_quorum_storage(env);
+    crate::draw::clear_quorum_storage(env);
     env.storage().instance().set(&DataKey::DrawingLock, &false);
 
     let mut winner_addresses = Vec::new(env);
     for w in winners.iter() {
-        winner_addresses.push_back(w.address);
+        winner_addresses.push_back(w);
     }
 
     RaffleFinalized {
         raffle_id: env.current_contract_address(),
         winners: winner_addresses,
-        winning_ticket_ids,
+        winning_ticket_ids: winning_indices,
         total_tickets_sold: raffle.tickets_sold,
         randomness_source: raffle.randomness_source.clone(),
         randomness_type,
@@ -602,7 +559,8 @@ fn record_leaderboard(env: &Env, raffle: &Raffle) {
         &factory,
         &Symbol::new(env, "record_leaderboard_entry"),
         args,
-        use raffle_shared::BuyQuote;
+    );
+}
 
 /// Shared by `buy_tickets` and `preview_buy` so charges never diverge.
 ///
@@ -665,11 +623,9 @@ pub(crate) fn calculate_buy_quote(raffle: &Raffle, quantity: u32) -> Result<BuyQ
         fee,
         net_to_pay: after_discount,
         effective_ticket_price,
-
-    );
+    })
 }
 
-        fix/bump-raffle-ttl-746
 // ============================================================================
 // TTL Management
 // ============================================================================
@@ -784,24 +740,6 @@ fn bump_ticket_entries_amortised(env: &Env, tickets_sold: u32) {
     env.storage()
         .instance()
         .set(&DataKey::LastBumpedIndex, &next_index);
-
-/// Remove all quorum seed storage so a re-draw can accept the same oracles again.
-pub(crate) fn clear_quorum_storage(env: &Env) {
-    if let Some(submitted) = env
-        .storage()
-        .persistent()
-        .get::<_, Vec<Address>>(&DataKey::QuorumSubmittedOracles)
-    {
-        for i in 0..submitted.len() {
-            if let Some(addr) = submitted.get(i) {
-                env.storage().persistent().remove(&DataKey::QuorumSeed(addr));
-            }
-        }
-        env.storage()
-            .persistent()
-            .remove(&DataKey::QuorumSubmittedOracles);
-    }
-        master
 }
 
 #[cfg(any(test, feature = "testutils"))]
@@ -838,7 +776,16 @@ fn unrefunded_ticket_total(env: &Env, raffle: &Raffle) -> i128 {
     let mut total = 0i128;
     for ticket_id in 1..=raffle.tickets_sold {
         if !env.storage().persistent().has(&DataKey::TicketRefunded(ticket_id)) {
-            total = checked_add(total, ticket_payment_amount(raffle, ticket_id), "ticket refunds");
+            // Use the price actually charged (bundles / early-bird / fee
+            // rounding) rather than recomputing it from the config, so the
+            // escrow identity matches what `refund_ticket` will pay out.
+            let paid = env
+                .storage()
+                .persistent()
+                .get::<_, crate::Ticket>(&DataKey::Ticket(ticket_id))
+                .map(|t| t.price_paid)
+                .unwrap_or_else(|| ticket_payment_amount(raffle, ticket_id));
+            total = checked_add(total, paid, "ticket refunds");
         }
     }
     total
@@ -849,13 +796,22 @@ fn unclaimed_prize_total(raffle: &Raffle) -> i128 {
     if !raffle.prize_deposited {
         return 0;
     }
+    if raffle.status == RaffleStatus::Claimed {
+        // Every tier has been paid out; nothing is left in escrow.
+        return 0;
+    }
     if raffle.status != RaffleStatus::Finalized {
         return raffle.prize_amount;
     }
 
     let mut total = 0i128;
     for tier_index in 0..raffle.winners.len() {
-        if !raffle.claimed_winners.get(tier_index).unwrap_or(false) {
+        if !raffle
+            .winners
+            .get(tier_index)
+            .map(|w| w.claimed)
+            .unwrap_or(false)
+        {
             let amount = calculate_tier_prize(raffle, tier_index)
                 .expect("solvency invariant failed to calculate tier prize");
             total = checked_add(total, amount, "unclaimed prizes");
@@ -874,14 +830,10 @@ fn unclaimed_prize_total(raffle: &Raffle) -> i128 {
 pub fn assert_solvent(env: &Env) {
     let raffle = read_raffle(env).expect("solvency invariant requires initialized raffle");
     let prize_owed = unclaimed_prize_total(&raffle);
-    let payment_owed = checked_add(
-        unrefunded_ticket_total(env, &raffle),
-        env.storage()
-            .instance()
-            .get::<_, i128>(&DataKey::AccumulatedFees)
-            .unwrap_or(0),
-        "payment-token entitlements",
-    );
+    // Protocol fees are forwarded to the treasury when the tickets are sold,
+    // so the contract no longer owes them; only un-refunded ticket payments
+    // remain a payment-token obligation.
+    let payment_owed = unrefunded_ticket_total(env, &raffle);
 
     let payment_balance =
         token::Client::new(env, &raffle.payment_token).balance(&env.current_contract_address());
@@ -904,44 +856,4 @@ pub fn assert_solvent(env: &Env) {
         payment_balance >= payment_owed,
         "escrow insolvent for payment token: balance {payment_balance}, owed {payment_owed}"
     );
-}
-
-pub(crate) fn calculate_buy_quote(
-    raffle: &Raffle,
-    quantity: u32,
-) -> Result<(i128, i128, i128), Error> {
-    let early_bird_cap = (raffle.ticket_supply as u64)
-        .checked_mul(raffle.early_bird_ticket_percentage as u64)
-        .ok_or(Error::ArithmeticOverflow)?
-        / 100;
-    let early_bird_remaining = (early_bird_cap as u32).saturating_sub(raffle.tickets_sold);
-    let early_bird_quantity = u32::min(quantity, early_bird_remaining);
-    let regular_quantity = quantity - early_bird_quantity;
-
-    let discounted_price = raffle
-        .ticket_price
-        .checked_mul((10000 - raffle.early_bird_discount_bp) as i128)
-        .ok_or(Error::ArithmeticOverflow)?
-        / 10000;
-
-    let early_bird_cost = (early_bird_quantity as i128)
-        .checked_mul(discounted_price)
-        .ok_or(Error::ArithmeticOverflow)?;
-    let regular_cost = (regular_quantity as i128)
-        .checked_mul(raffle.ticket_price)
-        .ok_or(Error::ArithmeticOverflow)?;
-    let total_price = early_bird_cost
-        .checked_add(regular_cost)
-        .ok_or(Error::ArithmeticOverflow)?;
-
-    let protocol_fee = total_price
-        .checked_mul(raffle.protocol_fee_bp as i128)
-        .ok_or(Error::ArithmeticOverflow)?
-        / 10000;
-
-    let effective_ticket_price = total_price
-        .checked_div(quantity as i128)
-        .ok_or(Error::ArithmeticOverflow)?;
-
-    Ok((total_price, protocol_fee, effective_ticket_price))
 }

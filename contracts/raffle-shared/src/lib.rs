@@ -147,6 +147,9 @@ pub enum RandomnessType {
     Vrf = 1,
     /// Fallback path used when preferred randomness path is unavailable.
     Fallback = 2,
+    /// k-of-n quorum of oracles; seed is aggregated from revealed quorum
+    /// contributions after each reveal was verified against its commitment.
+    Quorum = 3,
 }
 
 /// Configuration for a recurring (subscription) raffle.
@@ -248,16 +251,6 @@ pub struct RaffleConfig {
     pub prize_token: Option<Address>,
     /// Optional NFT contract for ticket receipts.
     pub nft_contract: Option<Address>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[contracttype]
-pub struct BuyQuote {
-    pub gross: i128,
-    pub discount: i128,
-    pub fee: i128,
-    pub net_to_pay: i128,
-    pub effective_ticket_price: i128,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

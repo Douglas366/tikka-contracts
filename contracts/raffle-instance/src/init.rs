@@ -94,6 +94,7 @@ use crate::{
 /// Emits [`events::RaffleCreated`].
 ///
 /// See also: [`docs/EVENTS.md`](../../../../docs/EVENTS.md) — `RaffleCreated`.
+#[allow(dead_code)] // unreachable duplicate of the `init` entrypoint defined in `lib.rs`
 pub(crate) fn init(
     env: Env,
     factory: Address,
@@ -101,10 +102,6 @@ pub(crate) fn init(
     creator: Address,
     mut config: RaffleConfig,
 ) -> Result<(), Error> {
-    if env.storage().instance().has(&DataKey::Raffle) {
-        return Err(Error::AlreadyInitialized);
-    }
-
     if config.description.len() > MAX_DESCRIPTION_LENGTH {
         return Err(Error::InvalidParameters);
     }
@@ -230,7 +227,6 @@ pub(crate) fn init(
         max_tickets_per_address: config.max_tickets_per_address,
         min_tickets: config.min_tickets,
         allow_multiple: config.allow_multiple,
-        max_tickets_per_address: config.max_tickets_per_address,
         ticket_price: config.ticket_price,
         payment_token: config.payment_token.clone(),
         prize_token: config.payment_token.clone(),
@@ -255,8 +251,15 @@ pub(crate) fn init(
         early_bird_discount_bp: config.early_bird_discount_bp,
         metadata_hash: config.metadata_hash.clone(),
         unique_winners: config.unique_winners,
+        bundles: config.bundles.clone(),
         nft_contract: config.nft_contract,
     };
+    // Config validation above runs first so that a re-init with an invalid
+    // config reports the actual config error rather than `AlreadyInitialized`.
+    if env.storage().instance().has(&DataKey::Raffle) {
+        return Err(Error::AlreadyInitialized);
+    }
+
     write_raffle(&env, &raffle);
     env.storage().instance().set(&DataKey::Factory, &factory);
     env.storage().instance().set(&DataKey::Admin, &admin);
@@ -295,6 +298,7 @@ pub(crate) fn init(
 ///
 /// - [`Error::InvalidParameters`] — category is present but empty, too long,
 ///   or contains disallowed characters.
+#[allow(dead_code)] // only reached from the unreachable duplicate `init` above
 fn validate_category(category: &Option<String>) -> Result<(), Error> {
     let Some(cat) = category else {
         return Ok(());

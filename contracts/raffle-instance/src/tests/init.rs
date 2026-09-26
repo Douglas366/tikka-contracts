@@ -33,6 +33,7 @@ fn test_init_claim_lockup_seconds_at_bound_succeeds() {
             metadata_hash: BytesN::from_array(&env, &[49; 32]),
         claim_lockup_seconds: 0,
         swap_deadline_seconds: 0,
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -94,6 +95,7 @@ fn test_init_claim_lockup_seconds_above_bound_rejected() {
             metadata_hash: BytesN::from_array(&env, &[51; 32]),
         claim_lockup_seconds: 0,
         swap_deadline_seconds: 0,
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -461,6 +463,7 @@ fn update_metadata_hash_before_deposit_only() {
         early_bird_discount_bp: 0,
         category: None,
         unique_winners: false,
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -513,6 +516,7 @@ fn test_explicit_zero_lockup_is_honored() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);
@@ -559,6 +563,7 @@ fn test_unset_lockup_gets_default() {
         early_bird_ticket_percentage: 0,
         early_bird_discount_bp: 0,
         category: None,
+            bundles: soroban_sdk::Vec::new(&env),
     };
 
     client.init(&factory, &admin, &creator, &config);

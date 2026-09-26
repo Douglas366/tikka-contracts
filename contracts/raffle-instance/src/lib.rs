@@ -7,11 +7,17 @@
 extern crate std;
 
 use soroban_sdk::{
-    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contract, contracterror, contractimpl, contracttype, token,
-    xdr::ToXdr,
-    Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
+    contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, String, Vec,
 };
+
+#[cfg(test)]
+use self::randomness::build_vrf_proof_message;
+#[cfg(test)]
+use soroban_sdk::{token, Bytes};
+#[cfg(test)]
+use soroban_sdk::testutils::Address as _;
+#[cfg(test)]
+use soroban_sdk::vec;
 
 mod admin;
 mod attestation;
@@ -24,7 +30,6 @@ mod randomness;
 mod tickets;
 mod views;
 
-pub(crate) use helpers::do_finalize_with_seed;
 pub(crate) use helpers::{
     calculate_tier_prize, read_raffle, require_admin, require_global_not_paused,
     require_not_paused, request_randomness, transition_status, transition_to_drawing,
@@ -44,29 +49,55 @@ use raffle_shared::{
     constants::{
         DEFAULT_CLAIM_EXPIRY_SECONDS, DEFAULT_CLAIM_LOCKUP_SECONDS, DEFAULT_SWAP_DEADLINE_SECONDS,
         EMERGENCY_WITHDRAW_DELAY_SECONDS, MAX_CLAIM_LOCKUP_SECONDS, MAX_DESCRIPTION_LENGTH,
-        MAX_PRIZES, MAX_PRIZE_AMOUNT, MAX_PROTOCOL_FEE_BP, MAX_SWEEP_UNCLAIMED_PER_CALL,
-        MAX_SWAP_DEADLINE_SECONDS, MAX_TICKETS_LIMIT, MIN_CLAIM_EXPIRY_SECONDS, MIN_TICKET_PRICE,
-        ORACLE_TIMEOUT_LEDGERS,
+        MAX_PRIZES, MAX_PRIZE_AMOUNT, MAX_PROTOCOL_FEE_BP, MAX_SWAP_DEADLINE_SECONDS,
+        MAX_TICKETS_LIMIT, MIN_CLAIM_EXPIRY_SECONDS, MIN_TICKET_PRICE, ORACLE_TIMEOUT_LEDGERS,
     },
-    BuyQuote, CancelReason, FailureReason, FairnessData, QuorumConfig, RaffleConfig,
-    RaffleStats, RaffleStatus, RandomnessSource, RandomnessType, Ticket,
+    exceeds_internal_randomness_cap, BuyQuote, CancelReason, FairnessData, QuorumConfig,
+    RaffleConfig, RaffleStats, RaffleStatus, RandomnessSource, RandomnessType, Ticket,
 };
 
-use self::randomness::build_vrf_proof_message;
-
-use crate::events::{
-    CancelScheduled, ContractPaused, ContractUnpaused, DrawTriggered, EmergencyWithdrawn,
-    FeesWithdrawn, MetadataHashUpdated, OracleAddressUpdated, OracleSeedDelivered, PrizeClaimed, PrizeDeposited,
-    PrizeRefunded, ProtocolFeeUpdated, RaffleCancelled, RaffleCreated, RaffleFailed,
-    RaffleFinalized, RaffleStatusChanged, RandomnessFallbackTriggered, RandomnessReceived,
-    RandomnessRequested, StorageWiped, SwapDeadlineUpdated, TicketNftMinted, TicketPurchased,
-    TicketRefunded, TicketSalesPaused, TicketSalesResumed, TokensRescued, WinnerDrawn,
-};
+use crate::events::RaffleCreated;
 
 const RANDOMNESS_MIN_DELAY_LEDGERS: u32 = 10;
 
 #[contract]
 pub struct RaffleInstance;
+
+/// Test-only alias so unit tests may register the contract as `Contract`.
+#[cfg(test)]
+pub use RaffleInstance as Contract;
+
+/// Test-only alias for [`RaffleInstanceClient`].
+#[cfg(test)]
+pub type ContractClient<'a> = RaffleInstanceClient<'a>;
+
+/// Test-only stand-in for the factory contract. The instance invokes
+/// `record_volume` / `track_participant` on its factory during ticket
+/// purchases, so tests register this stub to keep those calls on-ledger.
+#[cfg(test)]
+#[contract]
+pub struct MockFactory;
+
+#[cfg(test)]
+#[contractimpl]
+impl MockFactory {
+    pub fn is_global_paused(_env: Env) -> bool {
+        false
+    }
+
+    pub fn record_volume(_env: Env, _payment_token: Address, _total_price: i128) {}
+
+    pub fn track_participant(_env: Env, _buyer: Address) {}
+
+    pub fn record_leaderboard_entry(
+        _env: Env,
+        _raffle_id: Address,
+        _tickets: i128,
+        _prize_amount: i128,
+        _volume: i128,
+    ) {
+    }
+}
 
 #[contracttype]
 #[derive(Clone)]
@@ -166,8 +197,10 @@ pub enum DataKey {
     OwnerTickets(Address),
     PendingAdminCancel,
     QuorumSeed(Address),
+    QuorumCommit(Address),
     QuorumSubmittedOracles,
     MetadataHash,
+    LastBumpedIndex,
 }
 
 #[contracttype]
@@ -175,9 +208,18 @@ pub enum DataKey {
 pub struct CommitRevealEntry {
     pub committer: Address,
     pub hash: BytesN<32>,
+    /// Pre-image revealed by the committer, once opened during finalization.
+    /// `None` until [`reveal_commit`](crate::draw::reveal_commit) succeeds.
+    pub revealed: Option<BytesN<32>>,
 }
 
-#[contracterror]
+// `export = false`: the Soroban spec XDR caps a `ScSpecUdtErrorEnumV0` at 50
+// cases (`VecM<_, 50>`), and this enum already carries 50+ codes (see
+// `docs/ERRORS.md`, which is the CI-enforced source of truth for error codes
+// and frontend messages). Exporting the spec would make the derive panic with
+// `LengthExceedsMax`, so the spec entry is omitted while every code and name
+// is preserved.
+#[contracterror(export = false)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub enum Error {
     /// Raffle is not in an active state for ticket sales. Code 2.
@@ -267,49 +309,25 @@ pub enum Error {
     InvalidAdminAddress = 63,
     /// Randomness callback received before the minimum delay. Code 64.
     RandomnessTooEarly = 64,
-    ExceedsMaxTicketsPerAddress = 67,
     CancelTimelockActive = 65,
     CancelNotScheduled = 66,
     ExceedsMaxTicketsPerAddress = 67,
     OracleNotRegistered = 68,
     DuplicateOracleSubmission = 69,
     CommitAlreadySubmitted = 70,
-}
-
-/// Returns the effective per-address ticket cap, if any.
-///
-/// `max_tickets_per_address` supersedes `allow_multiple`; when unset (0),
-/// `allow_multiple = false` still restricts each address to one ticket.
-fn effective_max_tickets_per_address(raffle: &Raffle) -> Option<u32> {
-    if raffle.max_tickets_per_address > 0 {
-        Some(raffle.max_tickets_per_address)
-    } else if !raffle.allow_multiple {
-        Some(1)
-    } else {
-        None
-    }
-}
-
-fn enforce_max_tickets_per_address(
-    env: &Env,
-    raffle: &Raffle,
-    address: &Address,
-    quantity: u32,
-) -> Result<(), Error> {
-    if let Some(cap) = effective_max_tickets_per_address(raffle) {
-        let current: u32 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::TicketCount(address.clone()))
-            .unwrap_or(0);
-        let Some(total) = current.checked_add(quantity) else {
-            return Err(Error::ExceedsMaxTicketsPerAddress);
-        };
-        if total > cap {
-            return Err(Error::ExceedsMaxTicketsPerAddress);
-        }
-    }
-    Ok(())
+    /// Randomness callback arrived before the raffle entered the drawing phase.
+    /// Code 71.
+    DrawingNotStarted = 71,
+    /// Reveal was submitted for an oracle that has not committed yet. Code 72.
+    MissingCommit = 72,
+    /// Revealed pre-image does not hash to the commitment stored for this
+    /// oracle. Code 73.
+    CommitMismatch = 73,
+    /// Reveal attempted before `k` commitments were recorded. Code 74.
+    TooFewCommits = 74,
+    /// Configured randomness source is too weak for the configured prize
+    /// amount. Code 75.
+    RandomnessSourceTooWeakForPrize = 75,
 }
 
 #[contractimpl]
@@ -321,10 +339,6 @@ impl RaffleInstance {
         creator: Address,
         config: RaffleConfig,
     ) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Raffle) {
-            return Err(Error::AlreadyInitialized);
-        }
-
         if config.description.len() > MAX_DESCRIPTION_LENGTH {
             return Err(Error::InvalidParameters);
         }
@@ -524,6 +538,13 @@ if config.randomness_source == RandomnessSource::External {
             bundles: config.bundles.clone(),
             nft_contract: config.nft_contract.clone(),
         };
+        // Config validation above runs first so that a re-init with an
+        // invalid config reports the actual config error rather than
+        // `AlreadyInitialized`.
+        if env.storage().instance().has(&DataKey::Raffle) {
+            return Err(Error::AlreadyInitialized);
+        }
+
         write_raffle(&env, &raffle);
         env.storage().instance().set(&DataKey::Factory, &factory);
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -604,119 +625,49 @@ if config.randomness_source == RandomnessSource::External {
         result
     }
 
-    /// Accept a seed from a single oracle in a k-of-n Quorum configuration.
+    /// Phase 1 of the k-of-n quorum commit-reveal protocol (#986): record a
+    /// blinded seed commitment from one of the registered oracles.
     ///
-    /// The caller must be one of the registered oracles in the raffle's
-    /// `RandomnessSource::Quorum` list.  Each oracle may submit at
-    /// most once.  Once the k-th valid submission is received, the seeds are
-    /// aggregated via `aggregate_quorum_seeds` and the raffle is finalized.
+    /// `commit` must be `sha256(seed_be_bytes || oracle_address_xdr ||
+    /// request_id_be_bytes)` so a later reveal can be verified on-chain and
+    /// bound to this oracle and this randomness request.  No seed material is
+    /// written in this phase, so later submitters learn nothing about earlier
+    /// ones.
+    pub fn provide_quorum_commit(
+        env: Env,
+        oracle: Address,
+        commit: BytesN<32>,
+        request_id: u64,
+    ) -> Result<(), Error> {
+        draw::provide_quorum_commit(env, oracle, commit, request_id)
+    }
+
+    /// Phase 2 of the k-of-n quorum commit-reveal protocol (#986): open a
+    /// previously committed seed.
+    ///
+    /// The reveal is rejected unless the oracle committed in phase 1, the
+    /// recorded commitment hashes to `sha256(seed || oracle || request_id)`,
+    /// and at least `k` commitments are already on record.  The raffle is
+    /// finalized on the k-th valid reveal — never on a commit alone.
     pub fn provide_quorum_randomness(
         env: Env,
         oracle: Address,
         random_seed: u64,
         request_id: u64,
     ) -> Result<(), Error> {
-        let drawing_lock: bool = env
-            .storage()
-            .instance()
-            .get(&DataKey::DrawingLock)
-            .unwrap_or(false);
-        if !drawing_lock {
-            return Err(Error::InvalidStatus);
-        }
-
-        caller.require_auth();
-
-        let raffle = read_raffle(&env)?;
-
-        // Verify random seed context: request_id
-        let stored: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::RandomnessRequestId)
-            .ok_or(Error::NoRandomnessRequest)?;
-        if stored != request_id {
-            return Err(Error::InvalidParameters);
-        }
-
-        // Extract the oracle list from the Quorum config.
-        let (k, oracles) = match &raffle.randomness_source {
-            RandomnessSource::Quorum(QuorumConfig { k, oracles }) => (*k, oracles.clone()),
-            _ => return Err(Error::InvalidParameters),
-        };
-
-        // Verify caller is a registered oracle.
-        let mut is_registered = false;
-        for i in 0..oracles.len() {
-            if let Some(addr) = oracles.get(i) {
-                if addr == caller {
-                    is_registered = true;
-                    break;
-                }
-            }
-        }
-        if !is_registered {
-            return Err(Error::OracleNotRegistered);
-        }
-
-        // Dedup: reject if this oracle already submitted.
-        if env.storage().persistent().has(&DataKey::QuorumSeed(caller.clone())) {
-            return Err(Error::DuplicateOracleSubmission);
-        }
-
-        // Store the seed.
-        env.storage()
-            .persistent()
-            .set(&DataKey::QuorumSeed(caller.clone()), &random_seed);
-
-        // Track submission order.
-        let mut submitted: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::QuorumSubmittedOracles)
-            .unwrap_or_else(|| Vec::new(&env));
-        submitted.push_back(caller.clone());
-        env.storage()
-            .persistent()
-            .set(&DataKey::QuorumSubmittedOracles, &submitted);
-
-        let count = submitted.len() as u32;
-
-        // Emit delivery event.
-        OracleSeedDelivered {
-            oracle: caller.clone(),
-            seed: random_seed,
-            request_id,
-            current_count: count,
-            threshold: k,
-            timestamp: env.ledger().timestamp(),
-        }
-        .publish(&env);
-
-        // Check if quorum reached.
-        if count >= k {
-            // Build the seed list from storage.
-            let mut seeds = Vec::new(&env);
-            for i in 0..submitted.len() {
-                if let Some(addr) = submitted.get(i) {
-                    if let Some(s) = env
-                        .storage()
-                        .persistent()
-                        .get::<_, u64>(&DataKey::QuorumSeed(addr.clone()))
-                    {
-                        seeds.push_back((addr.clone(), s));
-                    }
-                }
-            }
-
-            let aggregate = randomness::aggregate_quorum_seeds(&env, &seeds);
-            helpers::do_finalize_with_seed(&env, raffle, aggregate, RandomnessType::Quorum, Some(seeds))?;
-        }
-
+        let result = draw::provide_quorum_randomness(env.clone(), oracle, random_seed, request_id);
         #[cfg(any(test, feature = "testutils"))]
-        helpers::assert_solvent(&env);
+        assert_solvent_after_success(&env, &result);
+        result
+    }
 
-        Ok(())
+    /// Open a ticket-holder commit made while the raffle was `Active` for the
+    /// `CommitReveal` randomness mode (#989).
+    ///
+    /// The seed of a `CommitReveal` draw is derived only from revealed
+    /// pre-images; commits that are never revealed cannot influence it.
+    pub fn reveal_commit(env: Env, ticket_id: u32, preimage: BytesN<32>) -> Result<(), Error> {
+        draw::reveal_commit(env, ticket_id, preimage)
     }
 
     pub fn trigger_randomness_fallback(
@@ -805,8 +756,8 @@ if config.randomness_source == RandomnessSource::External {
         result
     }
 
-    pub fn refund_ticket(env: Env, caller: Address, ticket_id: u32) -> Result<i128, Error> {
-        claim::refund_ticket(env, caller, ticket_id)
+    pub fn refund_ticket(env: Env, ticket_id: u32) -> Result<i128, Error> {
+        claim::refund_ticket(env, ticket_id)
     }
 
     pub fn batch_refund_tickets(
@@ -898,16 +849,7 @@ if config.randomness_source == RandomnessSource::External {
         env: Env,
         owner: Address,
     ) -> Result<u32, Error> {
-        let raffle = read_raffle(&env)?;
-        let Some(cap) = effective_max_tickets_per_address(&raffle) else {
-            return Ok(u32::MAX);
-        };
-        let current: u32 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::TicketCount(owner))
-            .unwrap_or(0);
-        Ok(cap.saturating_sub(current))
+        views::get_remaining_ticket_allowance(env, owner)
     }
 
     /// Quote the exact cost of buying `quantity` tickets including early-bird
@@ -963,6 +905,12 @@ if config.randomness_source == RandomnessSource::External {
         result
     }
 
+    /// Rotate the instance admin address. Invoked cross-contract by the
+    /// factory's `sync_admin` entrypoint.
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        admin::set_admin(env, new_admin)
+    }
+
     pub fn set_swap_deadline(env: Env, new_deadline_seconds: u64) -> Result<(), Error> {
         let result = admin::set_swap_deadline(env.clone(), new_deadline_seconds);
         #[cfg(any(test, feature = "testutils"))]
@@ -982,6 +930,7 @@ if config.randomness_source == RandomnessSource::External {
     pub fn extend_ttl(env: Env) -> Result<(), Error> {
         let _raffle = read_raffle(&env)?;
         Err(Error::InvalidParameters)
+    }
 }
 
 #[cfg(test)]

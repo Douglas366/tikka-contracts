@@ -46,9 +46,9 @@ fn claim_state_fixture(
         early_bird_discount_bp: 0,
         category: None,
         unique_winners: true,
-        bundles: soroban_sdk::Vec::new(env),
         prize_token: None,
         nft_contract: None,
+            bundles: soroban_sdk::Vec::new(env),
     };
 
     client.init(&factory, &admin, &creator, &config);
