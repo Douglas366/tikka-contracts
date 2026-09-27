@@ -4,7 +4,7 @@ Check for orphaned Rust modules.
 
 This script walks through each crate's src/ directory, resolves the module tree
 from lib.rs (and main.rs if present), and reports any .rs files that are not
-reachable from the module declarations.
+reachable from the module declarations. It also checks cargo-fuzz bin roots.
 
 It also flags stray .rs files outside any crate's src/ directory, with an allowlist
 for legitimate cases such as build.rs.
@@ -24,7 +24,6 @@ ALLOWLISTED_ROOT_FILES = {
 # Directories to skip (not crates)
 SKIP_DIRS = {
     "target",
-    "fuzz",
     ".git",
 }
 
@@ -116,6 +115,31 @@ def check_crate(crate_root: Path) -> Tuple[Set[Path], Set[Path]]:
     return reachable, orphans
 
 
+def check_fuzz_crate(fuzz_manifest: Path) -> Tuple[Set[Path], Set[Path]]:
+    """Check that every fuzz Rust source is reachable from a declared bin."""
+    fuzz_dir = fuzz_manifest.parent
+    manifest = fuzz_manifest.read_text(encoding="utf-8")
+    bin_sections = re.split(r"(?m)^\[\[bin\]\]\s*$", manifest)[1:]
+    target_paths = []
+
+    for section in bin_sections:
+        path_match = re.search(r'(?m)^\s*path\s*=\s*"([^"]+)"\s*$', section)
+        if path_match:
+            target_paths.append(fuzz_dir / path_match.group(1))
+
+    reachable = set()
+    for target_path in target_paths:
+        if target_path.exists():
+            reachable.update(resolve_module_tree(target_path))
+
+    all_rs_files = {
+        source
+        for source in fuzz_dir.rglob("*.rs")
+        if "target" not in source.relative_to(fuzz_dir).parts
+    }
+    return reachable, all_rs_files - reachable
+
+
 def check_stray_files(repo_root: Path) -> Set[Path]:
     """Check for stray .rs files outside crate src/ directories."""
     stray_files = set()
@@ -164,6 +188,21 @@ def main():
             total_orphans += len(orphans)
         else:
             print(f"  OK: All {len(reachable)} modules are reachable")
+
+    fuzz_manifest = repo_root / "fuzz" / "Cargo.toml"
+    if fuzz_manifest.exists():
+        print(f"\nChecking fuzz targets: {fuzz_manifest.parent}")
+        reachable, orphans = check_fuzz_crate(fuzz_manifest)
+
+        if orphans:
+            has_errors = True
+            print(f"  ERROR: {len(orphans)} unreachable Rust source(s) found:")
+            for orphan in sorted(orphans):
+                rel_path = orphan.relative_to(repo_root)
+                print(f"    - {rel_path}")
+            total_orphans += len(orphans)
+        else:
+            print(f"  OK: All {len(reachable)} fuzz sources are reachable")
 
     # Check for stray files
     stray_files = check_stray_files(repo_root)
