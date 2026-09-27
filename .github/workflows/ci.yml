@@ -141,6 +141,8 @@ jobs:
         run: npm ci
       - name: Check formatting (Prettier)
         run: npm run format:check
+      - name: Check package.json for duplicate keys (Prettier normalises JSON)
+        run: npx prettier --check package.json
       - name: Lint (ESLint)
         run: npm run lint
       - name: TypeScript compile check

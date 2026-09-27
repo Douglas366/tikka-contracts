@@ -9,6 +9,9 @@ import { GracefulShutdown } from './shutdown/graceful-shutdown';
 import { Alerter } from './alert/alerter';
 import { OracleConfig } from './config';
 import { QuorumService } from './quorum/quorum.service';
+import { childLogger } from './logging/logger';
+
+const queueLogger = childLogger({ component: 'pipeline' });
 
 export interface PipelineOptions {
   config: OracleConfig;
@@ -31,6 +34,8 @@ export class OraclePipeline {
   private quorumService!: QuorumService;
 
   private running = false;
+  /** Stored so shutdown() can await the loop draining cleanly. */
+  private processQueuePromise: Promise<void> | null = null;
 
   constructor(options: PipelineOptions) {
     const { config, alerter, checkpointStore, dedupStore } = options;
@@ -70,7 +75,7 @@ export class OraclePipeline {
         rpcUrl: config.rpcUrl,
         pollIntervalMs: config.pollIntervalMs,
         alerter: this.alerter,
-        rpcUnreachableThreshold: config.alertRpcUnreachableThreshold,
+        rpcUnreachableThreshold: this.config.alertRpcUnreachableThreshold,
       }
     );
 
@@ -89,7 +94,7 @@ export class OraclePipeline {
               message: `Oracle service ${code === 0 ? 'stopped' : 'failed'} (exit code ${code})`,
             })
             .finally(() => {
-              if (process.env.NODE_ENV !== 'test') {
+              if (process.env['NODE_ENV'] !== 'test') {
                 process.exit(code);
               }
             });
@@ -106,7 +111,7 @@ export class OraclePipeline {
     await this.keyService.initialize();
 
     const oracleAddress = this.keyService.getPublicKey();
-    const networkPassphrase = process.env.STELLAR_NETWORK_PASSPHRASE ?? 'Test Passphrase';
+    const networkPassphrase = process.env['STELLAR_NETWORK_PASSPHRASE'] ?? 'Test Passphrase';
     this.quorumService = new QuorumService(this.config.rpcUrl, networkPassphrase, oracleAddress);
 
     // Create event listener with actual public key
@@ -128,11 +133,19 @@ export class OraclePipeline {
     // Register graceful shutdown handlers
     this.gracefulShutdown.register(() => this.eventListener.stopListening());
 
-
-
     this.running = true;
-    // Start processing jobs from the queue
-    this.processQueue();
+
+    // Capture the promise so shutdown() can await it and so any unhandled
+    // rejection is surfaced as an alert rather than a silent process crash.
+    this.processQueuePromise = this.processQueue().catch((error: unknown) => {
+      this.running = false;
+      queueLogger.error('processQueue terminated unexpectedly:', error);
+      void this.alerter.notify({
+        type: 'process_stop',
+        severity: 'critical',
+        message: `Oracle processQueue crashed: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    });
 
     // Start listening for events in the background
     void this.eventListener.startListening(contractIds);
@@ -144,8 +157,8 @@ export class OraclePipeline {
     const { requestId, raffleContract } = job;
     const jobLogger = childLogger({ requestId: requestId.toString(), raffleId: raffleContract });
 
-    // Check for duplicates
-    if (this.dedupStore.isDuplicate(requestId, raffleContract)) {
+    // Pure check — does NOT mark the request as seen
+    if (this.dedupStore.has(requestId, raffleContract)) {
       jobLogger.info(`Skipping duplicate request: raffle=${raffleContract} requestId=${requestId}`);
       return false;
     }
@@ -153,14 +166,14 @@ export class OraclePipeline {
     try {
       // Check if we participate in Quorum or Single Oracle
       const quorumCheck = await this.quorumService.checkQuorumParticipation(raffleContract);
-      
+
       if (quorumCheck.isParticipant) {
-        // Quorum mode!
-        console.log(`Processing Quorum randomness request for raffle=${raffleContract} requestId=${requestId}`);
-        
+        // Quorum mode
+        queueLogger.info(`Processing Quorum randomness request for raffle=${raffleContract} requestId=${requestId}`);
+
         // Generate secure independent seed
         const randomSeed = this.quorumService.generateSecureSeed();
-        
+
         // Submit quorum transaction
         const txHash = await this.txSubmitter.submitProvideQuorumRandomness({
           raffleContract,
@@ -168,11 +181,11 @@ export class OraclePipeline {
           requestId,
         });
 
-        console.log(`Successfully submitted provide_quorum_randomness: ${txHash} for raffle=${raffleContract} requestId=${requestId}`);
+        queueLogger.info(`Successfully submitted provide_quorum_randomness: ${txHash} for raffle=${raffleContract} requestId=${requestId}`);
       } else {
-        // External (single oracle) mode!
-        console.log(`Processing single-oracle VRF randomness request for raffle=${raffleContract} requestId=${requestId}`);
-        
+        // External (single oracle) mode
+        queueLogger.info(`Processing single-oracle VRF randomness request for raffle=${raffleContract} requestId=${requestId}`);
+
         const randomSeed = Date.now(); // In production, this should come from a secure source
         const proof = this.vrfService.signRandomnessProof(raffleContract, requestId, BigInt(randomSeed));
 
@@ -185,11 +198,12 @@ export class OraclePipeline {
           requestId,
         });
 
-        console.log(`Successfully submitted provide_randomness: ${txHash} for raffle=${raffleContract} requestId=${requestId}`);
+        queueLogger.info(`Successfully submitted provide_randomness: ${txHash} for raffle=${raffleContract} requestId=${requestId}`);
       }
 
-      // Mark as processed (after successful submission)
-      this.dedupStore.isDuplicate(requestId, raffleContract); // This marks it as seen
+      // Mark as processed only after a successful on-chain submission so that
+      // a mid-flight failure does not permanently suppress retries (#1035).
+      this.dedupStore.markProcessed(requestId, raffleContract);
 
       return true;
     } catch (error) {
@@ -218,8 +232,12 @@ export class OraclePipeline {
   }
 
   async shutdown(): Promise<void> {
-    console.log('Shutting down oracle service...');
+    queueLogger.info('Shutting down oracle service...');
     this.running = false;
+    // Await the queue loop so draining completes before we release control
+    if (this.processQueuePromise !== null) {
+      await this.processQueuePromise;
+    }
     await this.gracefulShutdown.shutdown();
   }
 }
@@ -232,5 +250,3 @@ export function createPipeline(config: OracleConfig, options: Partial<PipelineOp
     dedupStore: options.dedupStore,
   });
 }
-
-
