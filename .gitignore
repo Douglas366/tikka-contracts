@@ -64,6 +64,6 @@ error*.txt
 # Agent / scratch artefacts
 patch_*.txt
 scratch_*.rs
-test_*.rs
+/test_*.rs
 update_*.py
 inject_*.py
