@@ -1,4 +1,15 @@
 repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.10
+    hooks:
+      - id: ruff
+        name: ruff lint (scripts/)
+        args: ["--fix"]
+        files: ^scripts/.*\.py$
+      - id: ruff-format
+        name: ruff format (scripts/)
+        files: ^scripts/.*\.py$
+
   - repo: local
     hooks:
       - id: cargo-fmt-check

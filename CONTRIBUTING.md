@@ -7,7 +7,7 @@ Thanks for your interest in contributing to Tikka! This project targets Stellar/
 1. Fork the repository and create a feature branch.
 2. Make your changes with clear, focused commits.
 3. Run `cargo fmt --all` to format code before committing.
-4. Run tests locally before opening a PR.
+4. **Run `make ci` before pushing** — it runs every check the CI workflow runs, in the same order. A green `make ci` means CI will pass.
 5. Install the recommended VS Code extensions when prompted and keep format-on-save enabled.
 6. Install the local hooks with `pip install pre-commit && pre-commit install`.
 
@@ -85,9 +85,9 @@ there are no exceptions for individual jobs. Required checks on `master` are:
 - `Oracle Service CI`
 - `Shell Script Checks`
 
-Repository admins must enable branch protection on `master` so these checks are
-required and branches must be up to date before merging. Workflow changes land in
-PRs first; enforcement is enabled once the pipeline is green.
+Run `make ci` locally before pushing to reproduce every check the workflow runs,
+in the same order. If `make ci` is green your PR will not introduce a red build.
+A new step added to `ci.yml` must have a corresponding `make` target, and vice-versa.
 
 ## Events Documentation Sync
 

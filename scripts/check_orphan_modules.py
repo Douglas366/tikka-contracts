@@ -10,11 +10,9 @@ It also flags stray .rs files outside any crate's src/ directory, with an allowl
 for legitimate cases such as build.rs.
 """
 
-import os
 import re
 import sys
 from pathlib import Path
-from typing import Dict, Set, Tuple
 
 # Allowlist for .rs files that are legitimately outside crate src/ directories
 ALLOWLISTED_ROOT_FILES = {
@@ -29,7 +27,7 @@ SKIP_DIRS = {
 }
 
 
-def extract_mod_declarations(file_path: Path) -> Set[str]:
+def extract_mod_declarations(file_path: Path) -> set[str]:
     """Extract module declarations from a Rust source file."""
     mods = set()
     try:
@@ -52,8 +50,8 @@ def extract_mod_declarations(file_path: Path) -> Set[str]:
 
 
 def resolve_module_tree(
-    crate_root: Path, visited: Set[Path] = None
-) -> Set[Path]:
+    crate_root: Path, visited: set[Path] | None = None
+) -> set[Path]:
     """Recursively resolve all reachable module files from the crate root."""
     if visited is None:
         visited = set()
@@ -83,7 +81,7 @@ def resolve_module_tree(
     return reachable_files
 
 
-def find_crates(repo_root: Path) -> Dict[Path, Path]:
+def find_crates(repo_root: Path) -> dict[Path, Path]:
     """Find all crates by looking for Cargo.toml files."""
     crates = {}
     for cargo_toml in repo_root.rglob("Cargo.toml"):
@@ -102,7 +100,7 @@ def find_crates(repo_root: Path) -> Dict[Path, Path]:
     return crates
 
 
-def check_crate(crate_root: Path) -> Tuple[Set[Path], Set[Path]]:
+def check_crate(crate_root: Path) -> tuple[set[Path], set[Path]]:
     """Check a single crate for orphaned modules."""
     src_dir = crate_root.parent
     all_rs_files = set(src_dir.rglob("*.rs"))
@@ -116,7 +114,7 @@ def check_crate(crate_root: Path) -> Tuple[Set[Path], Set[Path]]:
     return reachable, orphans
 
 
-def check_stray_files(repo_root: Path) -> Set[Path]:
+def check_stray_files(repo_root: Path) -> set[Path]:
     """Check for stray .rs files outside crate src/ directories."""
     stray_files = set()
 

@@ -6,50 +6,53 @@ not imply that the workspace currently compiles.
 
 ## Prerequisites
 
-- Rust and `rustup`
-- The `wasm32-unknown-unknown` Rust target
-- Stellar CLI compatible with the deployment scripts
+- Rust and `rustup` (toolchain version pinned in `rust-toolchain.toml`)
+- Stellar CLI `23.4.1` — must match `STELLAR_CLI_VERSION` in `scripts/common.sh`
 - Node.js 20 or newer for `oracle/`
 
-Install the WebAssembly target with:
-
-```bash
-rustup target add wasm32-unknown-unknown
-```
+The correct WASM target (`wasm32v1-none`) and Rust toolchain channel are declared
+in `rust-toolchain.toml` and picked up automatically by `rustup`.
 
 ## Local Checks
 
-Run focused checks before opening a pull request. The workspace currently has
-known build issues, so record any failure and consult the relevant issue before
-claiming a green build.
+Run `make ci` before pushing. It executes every check the CI workflow runs, in
+the same order, so a local green build means CI will pass:
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features
-cargo test
-cargo build --target wasm32-unknown-unknown --release
+make ci
 ```
 
-For the oracle service:
+This single command covers: orphan-module check, formatting, compile check,
+contract build, WASM size gate, docs sync, clippy, tests, doc tests, shellcheck,
+and the full oracle pipeline (format, lint, typecheck, tests).
+
+For faster, focused iteration during development:
 
 ```bash
-cd oracle
-npm install
-npm run lint
-npm test -- --runInBand
+make fmt          # cargo fmt check only
+make lint         # fmt + clippy
+make test         # cargo test --workspace
+make doc-test     # cargo test --workspace --doc
+make build        # stellar contract build
+make wasm-sizes   # WASM size gate
+make docs-sync    # regenerate + diff ERRORS.md and EVENTS.md
+make shellcheck   # shellcheck scripts/*.sh
+make oracle-ci    # full oracle pipeline
 ```
-
-See [TESTING.md](TESTING.md) for the test layout and [FAQ.md](FAQ.md) for
-common environment and toolchain problems. Do not treat stale implementation
-plans or status notes as evidence that a feature works.
 
 ## Build Targets
 
-The two contract packages are `raffle-factory` and `raffle-instance`:
+Build all contracts through the Stellar CLI (same target the deploy scripts use):
 
 ```bash
-cargo build --target wasm32-unknown-unknown --release -p raffle-factory
-cargo build --target wasm32-unknown-unknown --release -p raffle-instance
+make build   # stellar contract build → wasm32v1-none
+```
+
+To build individual packages:
+
+```bash
+stellar contract build -p raffle-factory
+stellar contract build -p raffle-instance
 ```
 
 Deployment and verification instructions are maintained in
