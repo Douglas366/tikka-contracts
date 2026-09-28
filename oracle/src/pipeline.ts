@@ -14,8 +14,9 @@ import { childLogger } from './logging/logger';
 export interface PipelineOptions {
   config: OracleConfig;
   alerter: Alerter;
-  checkpointStore?: LedgerCheckpointStore;
-  dedupStore?: DeduplicationStore;
+  checkpointStore?: LedgerCheckpointStore | undefined;
+  dedupStore?: DeduplicationStore | undefined;
+  deadLetterStore?: DeadLetterStore | undefined;
 }
 
 export class OraclePipeline {
@@ -49,8 +50,17 @@ export class OraclePipeline {
     // Initialize deduplication store
     this.dedupStore = dedupStore ?? new DeduplicationStore('./data/dedup.json');
 
-    // Initialize request queue
-    this.requestQueue = new RequestQueue();
+    // Initialize dead-letter store
+    this.deadLetterStore = deadLetterStore ?? new DeadLetterStore('./data/dead-letter.json');
+
+    // Initialize request queue with dead-letter store and limits from config
+    this.requestQueue = new RequestQueue({
+      alerter: this.alerter,
+      deadLetterStore: this.deadLetterStore,
+      depthLimit: config.alertQueueDepthLimit,
+      ageLimitMs: config.alertQueueAgeLimitMs,
+      maxAttempts: config.queueMaxAttempts,
+    });
 
     // Initialize VRF service
     this.vrfService = new VrfService(this.keyService);
@@ -212,11 +222,37 @@ export class OraclePipeline {
       }
 
       for (const job of jobs) {
+        const { requestId, raffleContract } = job;
+        const jobLogger = childLogger({ requestId: requestId.toString(), raffleId: raffleContract });
+
         try {
           await this.processJob(job);
         } catch (error) {
-          queueLogger.error('Error processing job:', error);
-          // Job will be retried on next restart if not marked as duplicate
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          jobLogger.error('Error processing job:', error);
+
+          const outcome = this.requestQueue.recordFailure(
+            raffleContract,
+            requestId,
+            errorMessage,
+          );
+
+          if (outcome === 'dead_lettered') {
+            oracleDeadLetterTotal.inc();
+            if (this.alerter) {
+              void this.alerter.notify({
+                type: 'dead_letter',
+                severity: 'critical',
+                bypassRateLimit: true,
+                message: `Randomness request dead-lettered: raffle=${raffleContract} requestId=${requestId}`,
+                details: {
+                  raffleContract,
+                  requestId: requestId.toString(),
+                  error: errorMessage,
+                },
+              });
+            }
+          }
         }
       }
     }

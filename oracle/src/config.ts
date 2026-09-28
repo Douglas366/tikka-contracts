@@ -15,6 +15,7 @@ export interface OracleConfig {
   alertQueueDepthLimit: number;
   alertQueueAgeLimitMs: number;
   alertRpcUnreachableThreshold: number;
+  queueMaxAttempts: number;
   retryPolicy: RetryPolicyOptions;
 }
 
@@ -80,6 +81,7 @@ export function loadAndValidateConfig(): OracleConfig {
   const alertQueueDepthLimit = readPositiveInt('ALERT_QUEUE_DEPTH_LIMIT', 10, errors);
   const alertQueueAgeLimitMs = readPositiveInt('ALERT_QUEUE_AGE_LIMIT_MS', 300_000, errors);
   const alertRpcUnreachableThreshold = readPositiveInt('ALERT_RPC_UNREACHABLE_THRESHOLD', 3, errors);
+  const queueMaxAttempts = readPositiveInt('QUEUE_MAX_ATTEMPTS', 5, errors);
   const retryPolicy: RetryPolicyOptions = {
     baseMs: readPositiveInt('ORACLE_RETRY_BASE_MS', 500, errors),
     maxMs: readPositiveInt('ORACLE_RETRY_MAX_MS', 30_000, errors),
@@ -109,6 +111,7 @@ export function loadAndValidateConfig(): OracleConfig {
     alertQueueDepthLimit,
     alertQueueAgeLimitMs,
     alertRpcUnreachableThreshold,
+    queueMaxAttempts,
     retryPolicy,
   };
 }
