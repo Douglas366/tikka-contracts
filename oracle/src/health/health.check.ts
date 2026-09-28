@@ -35,7 +35,7 @@ export class HealthCheck {
   private readonly deadLetterDegraded: number;
 
   constructor(options: HealthCheckOptions) {
-    this.port = options.port ?? Number(process.env.HEALTH_PORT ?? 3000);
+    this.port = options.port ?? 3000;
     this.host = options.host ?? '127.0.0.1';
     this.queue = options.queue;
     this.deadLetterStore = options.deadLetterStore;
