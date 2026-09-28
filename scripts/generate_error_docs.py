@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""
-Deterministically generate `docs/ERRORS.md` from the source of truth.
+"""Deterministically generate ``docs/ERRORS.md`` from the source of truth.
 
 Parses the contract error enums:
 
-    contracts/raffle-instance/src/lib.rs  -> `Error`
-    contracts/raffle-factory/src/lib.rs   -> `ContractError`
+    contracts/raffle-instance/src/lib.rs  -> ``Error``
+    contracts/raffle-factory/src/lib.rs   -> ``ContractError``
 
 The output is deterministic: for a fixed repository state the generated file
 is byte-identical every run, so it can be diffed in CI.
@@ -18,14 +17,13 @@ from __future__ import annotations
 
 import re
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DOCS = REPO_ROOT / "docs"
 
 # (source file, enum identifier, section title)
-ENUMS = [
+ENUMS: list[tuple[str, str, str]] = [
     (
         "contracts/raffle-instance/src/lib.rs",
         "Error",
@@ -39,26 +37,26 @@ ENUMS = [
 ]
 
 
-def parse_error_enum(file_path, enum_name):
-    """Parse `pub enum <enum_name> { Name = code, ... }` -> [(code, name)]."""
-    with open(file_path, "r", encoding="utf-8") as f:
-        content = f.read()
+def parse_error_enum(file_path: Path, enum_name: str) -> list[tuple[int, str]]:
+    """Parse ``pub enum <enum_name> { Name = code, ... }`` → [(code, name)]."""
+    content = file_path.read_text(encoding="utf-8")
     match = re.search(
         r"pub enum " + re.escape(enum_name) + r" \{(.*?)\}",
         content,
         re.DOTALL,
     )
     if not match:
-        print(f"Error: Could not find enum {enum_name} in {file_path}")
+        print(f"Error: Could not find enum {enum_name} in {file_path}", file=sys.stderr)
         sys.exit(1)
-    errors = []
-    for m in re.finditer(r"(\w+)\s*=\s*(\d+)", match.group(1)):
-        errors.append((int(m.group(2)), m.group(1)))
+    errors = [
+        (int(m.group(2)), m.group(1))
+        for m in re.finditer(r"(\w+)\s*=\s*(\d+)", match.group(1))
+    ]
     errors.sort(key=lambda x: x[0])
     return errors
 
 
-INSTANCE_DESCRIPTIONS = {
+INSTANCE_DESCRIPTIONS: dict[str, str] = {
     "RaffleNotFound": "The raffle data was not found in storage",
     "RaffleInactive": "The raffle is not in an active state",
     "TicketsSoldOut": "All tickets have been sold",
@@ -115,7 +113,7 @@ INSTANCE_DESCRIPTIONS = {
     "DuplicateOracleSubmission": "This oracle has already submitted its seed",
 }
 
-INSTANCE_MESSAGES = {
+INSTANCE_MESSAGES: dict[str, str] = {
     "RaffleNotFound": "Raffle not found",
     "RaffleInactive": "This raffle is not currently active",
     "TicketsSoldOut": "Sorry, all tickets have been sold!",
@@ -172,7 +170,7 @@ INSTANCE_MESSAGES = {
     "DuplicateOracleSubmission": "This oracle has already submitted its seed",
 }
 
-FACTORY_DESCRIPTIONS = {
+FACTORY_DESCRIPTIONS: dict[str, str] = {
     "AlreadyInitialized": "Factory is already initialized",
     "NotAuthorized": "User is not the admin",
     "ContractPaused": "Factory is paused",
@@ -194,7 +192,7 @@ FACTORY_DESCRIPTIONS = {
     "CreationPaused": "Raffle creation is paused",
 }
 
-FACTORY_MESSAGES = {
+FACTORY_MESSAGES: dict[str, str] = {
     "AlreadyInitialized": "Factory already initialized",
     "NotAuthorized": "You are not the admin",
     "ContractPaused": "Factory is temporarily paused",
@@ -217,7 +215,11 @@ FACTORY_MESSAGES = {
 }
 
 
-def markdown_table(errors, descriptions, messages):
+def markdown_table(
+    errors: list[tuple[int, str]],
+    descriptions: dict[str, str],
+    messages: dict[str, str],
+) -> str:
     lines = [
         "| Code | Error | Description | Frontend Message |",
         "| ---- | ----- | ----------- | ---------------- |",
@@ -225,11 +227,11 @@ def markdown_table(errors, descriptions, messages):
     for code, name in errors:
         desc = descriptions.get(name, "TODO: Add description")
         msg = messages.get(name, "TODO: Add message")
-        lines.append(f"| {code} | `{name}` | {desc} | \"{msg}\" |")
+        lines.append(f'| {code} | `{name}` | {desc} | "{msg}" |')
     return "\n".join(lines)
 
 
-def typescript_mapping(instance_errors):
+def typescript_mapping(instance_errors: list[tuple[int, str]]) -> str:
     lines = [
         "## Error Code Mapping (TypeScript)",
         "",
@@ -238,13 +240,13 @@ def typescript_mapping(instance_errors):
     ]
     for code, name in instance_errors:
         msg = INSTANCE_MESSAGES.get(name, "TODO: Add message")
-        lines.append(f"  {code}: \"{msg}\",")
+        lines.append(f'  {code}: "{msg}",')
     lines.append("};")
     lines.append("```")
     return "\n".join(lines)
 
 
-def main():
+def main() -> None:
     sections = []
     for src_rel, enum_name, title in ENUMS:
         src_file = REPO_ROOT / src_rel
@@ -258,11 +260,10 @@ def main():
             table = markdown_table(errors, FACTORY_DESCRIPTIONS, FACTORY_MESSAGES)
         sections.append(f"## {title}\n\n{table}")
 
-    instance_errors = parse_error_enum(
-        REPO_ROOT / ENUMS[0][0], ENUMS[0][1]
-    )
+    instance_errors = parse_error_enum(REPO_ROOT / ENUMS[0][0], ENUMS[0][1])
 
-    header = f"""# Error Codes
+    header = """\
+# Error Codes
 
 This document is **auto-generated** from the contract error enums. **Do not
 edit by hand.** Regenerate whenever error codes or descriptions change:
