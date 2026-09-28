@@ -97,6 +97,17 @@ there are no exceptions for individual jobs. Required checks on `master` are:
 - `Oracle Service CI`
 - `Shell Script Checks`
 
+To reproduce the full CI check list locally before pushing, run:
+
+```bash
+make ci
+```
+
+This runs the exact same steps as the `build_and_test` and `oracle_check` CI jobs
+(orphan check, cargo check, fmt, clippy, build, WASM sizes, error/event docs sync,
+Rust tests, oracle lint/typecheck/tests). It does not include the fuzz-targets
+compile check or the coverage ratchet, which run on their own schedules.
+
 Repository admins must enable branch protection on `master` so these checks are
 required and branches must be up to date before merging. Workflow changes land in
 PRs first; enforcement is enabled once the pipeline is green.

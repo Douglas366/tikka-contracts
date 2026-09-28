@@ -45,8 +45,8 @@ FUZZ_TIME ?= 300
 
 fuzz:
 	@for target in $(FUZZ_TARGETS); do \
-		echo "==> fuzzing $$target ($${FUZZ_TIME}s)"; \
-		cargo fuzz run $$target -- -max_total_time=$(FUZZ_TIME); \
+		echo "==> fuzzing $target (${FUZZ_TIME}s)"; \
+		cargo fuzz run $target -- -max_total_time=$(FUZZ_TIME); \
 	done
 
 # ---------------------------------------------------------------------------
