@@ -13,7 +13,12 @@ lint:
 	cargo fmt --all -- --check
 	cargo clippy --all-targets --all-features -- -D warnings
 
-FUZZ_TARGETS := fuzz_buy_ticket fuzz_finalize_raffle fuzz_winner_selection fuzz_refund_cancel fuzz_commit_reveal
+# Derive fuzz targets from fuzz/Cargo.toml so this list never drifts from what
+# is actually declared.  The shell snippet greps every [[bin]] name = "…" line,
+# strips the surrounding quotes and whitespace, then joins the results.
+FUZZ_TARGETS := $(shell grep -A1 '^\[\[bin\]\]' fuzz/Cargo.toml \
+                  | grep 'name\s*=' \
+                  | sed 's/.*name\s*=\s*"\([^"]*\)".*/\1/')
 FUZZ_TIME ?= 300
 
 fuzz:

@@ -213,6 +213,14 @@ pub struct RaffleConfig {
     pub randomness_source: RandomnessSource,
     /// Optional oracle contract address for external randomness flows.
     pub oracle_address: Option<Address>,
+    /// Ed25519 public key (32 bytes) belonging to the registered oracle.
+    ///
+    /// Required when `randomness_source == External`.  The raffle-instance
+    /// stores this key and rejects any `provide_randomness` call whose
+    /// `public_key` argument does not match — preventing an adversary from
+    /// substituting a throwaway keypair whose proof hashes to a favourable
+    /// seed (#985).
+    pub oracle_public_key: Option<BytesN<32>>,
     /// Protocol fee in basis points (100 = 1%). Currently charged at ticket
     /// purchase only. See docs/FEE_MODEL.md for the implemented fee model.
     pub protocol_fee_bp: u32,

@@ -210,11 +210,15 @@ impl WinnerSelectionStrategy for PrngWinnerSelection {
         }
 
         let effective_count = winner_count.min(total_tickets) as usize;
-        let drawn_count: usize = 0;
 
         // Draw up to total_tickets times, collecting unique indices until we have
         // effective_count winners.  This is bounded by total_tickets iterations
         // (no unbounded loop), and guarantees exactly effective_count distinct indices.
+        //
+        // FIX(#1006): the previous code kept a `drawn_count: usize = 0` that was
+        // never incremented, so the `drawn_count >= effective_count` break never
+        // fired and the loop always collected every unique index up to total_tickets.
+        // We now break directly on `indices.len() >= effective_count` instead.
         let mut drawn: Vec<u32> = Vec::new(env);
         for _ in 0..total_tickets {
             // Draw a random index from [0, total_tickets)
@@ -233,7 +237,7 @@ impl WinnerSelectionStrategy for PrngWinnerSelection {
             if !duplicate {
                 drawn.push_back(idx);
                 indices.push_back(idx);
-                if drawn_count >= effective_count {
+                if indices.len() as usize >= effective_count {
                     break;
                 }
             }
