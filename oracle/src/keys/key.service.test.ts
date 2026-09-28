@@ -62,7 +62,24 @@ describe('KeyService', () => {
   it('zeroizes secret bytes on shutdown', async () => {
     const service = new KeyService();
     await service.initialize();
+
+    // Capture a reference to the internal secretBytes buffer before shutdown.
+    // We cast through unknown to access the private field — this is intentional
+    // in a security test: we need to verify the actual memory was wiped, not
+    // just that the public API rejects calls.
+    const internals = service as unknown as { secretBytes: Buffer | undefined };
+    const secretBuf = internals.secretBytes;
+    expect(secretBuf).toBeDefined();
+    // Confirm it holds non-zero key material before the call.
+    expect(secretBuf!.some((b) => b !== 0)).toBe(true);
+
     service.shutdown();
+
+    // The buffer must be all-zero after zeroization.
+    expect(secretBuf!.every((b) => b === 0)).toBe(true);
+    // The internal reference must be cleared so the buffer can be GC'd.
+    expect(internals.secretBytes).toBeUndefined();
+    // The public API must also be locked out.
     expect(() => service.sign(Buffer.from('x'))).toThrow('not initialized');
   });
 

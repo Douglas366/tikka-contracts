@@ -1,4 +1,4 @@
-import { Keypair } from '@stellar/stellar-sdk';
+import { Keypair, Transaction } from '@stellar/stellar-sdk';
 import { decodeSecretKey, zeroizeBuffer } from './secret-key';
 import { logger } from '../logging/logger';
 
@@ -73,7 +73,7 @@ export class KeyService {
   /**
    * Signs a Stellar Transaction directly without exposing the keypair.
    */
-  signTransaction(tx: any): void {
+  signTransaction(tx: Transaction): void {
     this.ensureInitialized();
     tx.sign(this.keypair);
   }
