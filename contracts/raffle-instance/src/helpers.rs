@@ -421,6 +421,7 @@ pub(crate) fn build_internal_seed_u64(env: &Env) -> u64 {
     let xdr = (
         env.ledger().timestamp(),
         env.ledger().sequence(),
+        env.ledger().network_id(),
         env.current_contract_address(),
     )
         .to_xdr(env);

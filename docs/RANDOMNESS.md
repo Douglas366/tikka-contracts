@@ -14,17 +14,10 @@ The internal seed hashes this XDR-packed tuple and takes the first 8 bytes as a 
 
 1. Ledger timestamp
 1. Ledger sequence
+1. Network ID
 1. Current raffle contract address
 
-Values are XDR-packed and hashed with `env.crypto().sha256`, then fed to `env.prng().seed(...)`. Winner indices are selected via a **partial Fisher–Yates shuffle**: exactly `k` deterministic draws from the PRNG, using swap tracking to guarantee uniqueness without retries or modulo bias. This replaces the previous rejection-sampling loop which had an unbounded retry probability as `k` approached `n`.
-
-### Who can influence it
-
-- Anyone who can choose **when** `finalize_raffle` lands can work from visible ledger state.
-- Validators can influence timestamp/sequence.
-- Outcomes are **deterministic** for identical ledger + raffle inputs (good for audit, bad against motivated bias).
-
-The compact u64 seed used when finalizing through `do_finalize_with_seed` hashes `(timestamp, sequence, current_contract_address)` and takes the first 8 bytes.
+Values are XDR-packed and hashed with `env.crypto().sha256`. The resulting seed is passed to `OracleSeedWinnerSelection`; winner indices are selected via a **partial Fisher–Yates shuffle** with rejection sampling and swap tracking, without using `env.prng()`.
 
 ### Who can influence it
 
@@ -37,19 +30,22 @@ The compact u64 seed used when finalizing through `do_finalize_with_seed` hashes
 None. Finalize completes in the same call once tickets meet `min_tickets`.
 
 ### Cost
+
 ## 1. Single-Oracle VRF Mode
 
 In the single-oracle mode, a single trusted oracle is responsible for generating and delivering randomness.
 
 ### Protocol Flow
+
 1. The Raffle contract emits a `RandomnessRequested` event containing a unique `request_id`.
 2. The Oracle service detects the event, reads the `request_id` and contract ID, and generates a Verifiable Random Function (VRF) proof.
 3. The Oracle submits the proof and the generated random seed back to the contract via `provide_randomness`.
 4. The contract verifies the VRF proof on-chain using the Oracle's public key. If the proof is valid, the random seed is accepted.
 
 ### Trust Model & Mitigations
-- *Unpredictability*: Because VRF proofs are cryptographically tied to the Oracle's private key, the random seed is completely unpredictable to anyone (including the players) before it is submitted.
-- *Non-manipulation*: The Oracle cannot bias the randomness because there is only one valid VRF output for a given input (`request_id` + contract address`). The Oracle's only options are to submit the correct value or refuse to submit (causing a Denial of Service, which is monitored and alerted).
+
+- _Unpredictability_: Because VRF proofs are cryptographically tied to the Oracle's private key, the random seed is completely unpredictable to anyone (including the players) before it is submitted.
+- _Non-manipulation_: The Oracle cannot bias the randomness because there is only one valid VRF output for a given input (`request_id` + contract address`). The Oracle's only options are to submit the correct value or refuse to submit (causing a Denial of Service, which is monitored and alerted).
 
 ---
 
@@ -58,6 +54,7 @@ In the single-oracle mode, a single trusted oracle is responsible for generating
 In Quorum mode, a decentralized group of $n$ independent oracles participate, and at least $k$ unique oracle submissions are required to construct the final random seed.
 
 ### Protocol Flow
+
 1. The Raffle contract is configured with quorum parameters $k$ (threshold) and a list of $n$ authorized oracle addresses.
 2. The contract emits a `RandomnessRequested` event.
 3. Each participating oracle generates a cryptographically secure random seed independently and submits it to the contract via `provide_quorum_randomness(request_id, random_seed)`.
@@ -79,7 +76,7 @@ In Quorum mode, a decentralized group of $n$ independent oracles participate, an
 
 - Each committer contributes preimage entropy (if they later reveal off-chain).
 - Parties who **withhold** commits reduce entropy.
-- If **zero** commits exist at finalize, the contract **falls back to Internal PRNG** (same path as Internal after the CommitReveal branch).
+- If **zero** commits exist at finalize, the contract **falls back to the Internal seed derivation** (same path as Internal after the CommitReveal branch).
 
 ### Timeout / fallback
 
@@ -102,7 +99,7 @@ Medium-stakes raffles where buyers can be asked to commit, and you want stronger
 stroops ≈ 500 XLM). This turns the previous "≲ ~500 XLM" policy guidance
 below into an on-chain enforced limit — instance `init` returns
 `Error::RandomnessSourceTooWeakForPrize`, and the factory returns
-`ContractError::RandomnessSourceTooWeakForPrize` *before* deploying the
+`ContractError::RandomnessSourceTooWeakForPrize` _before_ deploying the
 raffle instance WASM, saving the creator deployment cost. Choose `External`,
 `CommitReveal`, or `Quorum` for anything above this cap.
 
@@ -125,7 +122,6 @@ issue, not addressed here.
 4. Delivered seeds are accumulated on-chain under `DataKey::QuorumSeeds` and `DataKey::QuorumOraclesSubmitted`.
 5. Once at least $k$ unique registered oracles have submitted valid seeds, the contract aggregates all delivered seeds via SHA-256 over their concatenated big-endian bytes (`aggregate_quorum_seeds`) to form the final 64-bit seed.
 6. The raffle is finalized via `do_finalize_with_seed` using the aggregated VRF seed.
-
 
 ## K-of-N Quorum Randomness Scheme
 
@@ -150,22 +146,21 @@ To eliminate single-oracle trust assumptions in high-stakes raffles, the contrac
 
 If fewer than $k$ oracles deliver valid seeds before `request_ledger + 200`:
 
-| `trigger_randomness_fallback(..., do_refund)` | Result |
-|---|---|
-| `do_refund = true` | Status → `Cancelled` (`CancelReason::OracleTimeout`); clears request & quorum state |
-| `do_refund = false` | Finalize with **Internal** u64 seed and `RandomnessType::Fallback` |
+| `trigger_randomness_fallback(..., do_refund)` | Result                                                                              |
+| --------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `do_refund = true`                            | Status → `Cancelled` (`CancelReason::OracleTimeout`); clears request & quorum state |
+| `do_refund = false`                           | Finalize with **Internal** u64 seed and `RandomnessType::Fallback`                  |
 
 ---
-
 
 ## Guidance thresholds
 
 These are **policy recommendations** aligned with README / code comments — not on-chain enforced limits:
 
-| Prize / risk profile | Suggested mode |
-|---|---|
-| Demo, tiny rewards, trusted community (≲ ~500 XLM) | **Internal** |
-| Meaningful value, engaged ticket buyers | **CommitReveal** (+ document commit UX) |
+| Prize / risk profile                                    | Suggested mode                                     |
+| ------------------------------------------------------- | -------------------------------------------------- |
+| Demo, tiny rewards, trusted community (≲ ~500 XLM)      | **Internal**                                       |
+| Meaningful value, engaged ticket buyers                 | **CommitReveal** (+ document commit UX)            |
 | Large prizes, public adversarial setting, institutional | **External** (+ monitored oracle, tested fallback) |
 
 Also consider:
@@ -178,34 +173,34 @@ Also consider:
 
 ## Failure modes summary
 
-| Mode | Primary failure mode | Protocol response |
-|---|---|---|
-| Internal | Biased finalize timing | None (inherent) |
-| External | Oracle silent | After 200 ledgers: refund cancel **or** Internal fallback |
-| External | Wrong `request_id` / bad proof | Tx rejects (`InvalidParameters` / crypto fail) |
-| CommitReveal | No commits | Internal PRNG fallback |
-| Any | `tickets_sold < min_tickets` or zero sold | `Failed` + `RaffleFailed` (no draw) |
-| Any | Concurrent finalize | `DrawingLock` → `DrawingAlreadyInProgress` |
+| Mode         | Primary failure mode                      | Protocol response                                         |
+| ------------ | ----------------------------------------- | --------------------------------------------------------- |
+| Internal     | Biased finalize timing                    | None (inherent)                                           |
+| External     | Oracle silent                             | After 200 ledgers: refund cancel **or** Internal fallback |
+| External     | Wrong `request_id` / bad proof            | Tx rejects (`InvalidParameters` / crypto fail)            |
+| CommitReveal | No commits                                | Internal seed fallback                                    |
+| Any          | `tickets_sold < min_tickets` or zero sold | `Failed` + `RaffleFailed` (no draw)                       |
+| Any          | Concurrent finalize                       | `DrawingLock` → `DrawingAlreadyInProgress`                |
 
 ---
 
 ## Code map
 
-| Concern | Location |
-|---|---|
-| Enum | `contracts/raffle-shared/src/lib.rs` → `RandomnessSource` |
-| Timeout constant | `contracts/raffle-shared/src/constants.rs` → `ORACLE_TIMEOUT_LEDGERS` |
-| Seed + strategies | `contracts/raffle-instance/src/randomness.rs` |
-| Finalize / oracle / fallback | `contracts/raffle-instance/src/draw.rs` |
-| Commits | `contracts/raffle-instance/src/tickets.rs` → `submit_commit` |
-| Off-chain oracle | `oracle/` |
+| Concern                      | Location                                                              |
+| ---------------------------- | --------------------------------------------------------------------- |
+| Enum                         | `contracts/raffle-shared/src/lib.rs` → `RandomnessSource`             |
+| Timeout constant             | `contracts/raffle-shared/src/constants.rs` → `ORACLE_TIMEOUT_LEDGERS` |
+| Seed + strategies            | `contracts/raffle-instance/src/randomness.rs`                         |
+| Finalize / oracle / fallback | `contracts/raffle-instance/src/draw.rs`                               |
+| Commits                      | `contracts/raffle-instance/src/tickets.rs` → `submit_commit`          |
+| Off-chain oracle             | `oracle/`                                                             |
 
 ## Related docs
 
-- [COMMIT_REVEAL.md](COMMIT_REVEAL.md) — commit/reveal protocol details  
-- [STORAGE.md](STORAGE.md) — randomness-related keys and tiers  
-- [ARCHITECTURE.md](ARCHITECTURE.md) — factory → instance → oracle flow  
-- [EVENTS.md](EVENTS.md) — `RandomnessRequested`, `RandomnessReceived`, fallback events  
+- [COMMIT_REVEAL.md](COMMIT_REVEAL.md) — commit/reveal protocol details
+- [STORAGE.md](STORAGE.md) — randomness-related keys and tiers
+- [ARCHITECTURE.md](ARCHITECTURE.md) — factory → instance → oracle flow
+- [EVENTS.md](EVENTS.md) — `RandomnessRequested`, `RandomnessReceived`, fallback events
 
 ---
 
@@ -249,31 +244,31 @@ The `DrawAttestation` struct combines everything needed for verification:
 pub struct DrawAttestation {
     /// Seed, ticket IDs, winning indices, timestamp, sequence
     pub fairness_data: FairnessData,
-    
+
     /// SHA-256 hash of off-chain metadata
     pub metadata_hash: BytesN<32>,
-    
+
     /// Winner addresses in prize-tier order
     pub winner_addresses: Vec<Address>,
-    
+
     /// Winning ticket IDs (1-indexed) in tier order
     pub winning_ticket_ids: Vec<u32>,
-    
+
     /// Randomness source (Internal, External, CommitReveal)
     pub randomness_source: RandomnessSource,
-    
+
     /// SHA-256 hash of effective config at draw time
     pub config_hash: BytesN<32>,
-    
+
     /// Total tickets sold
     pub total_tickets_sold: u32,
-    
+
     /// Prize distribution basis points
     pub prize_distribution_bp: Vec<u32>,
-    
+
     /// Total prize amount
     pub prize_amount: i128,
-    
+
     /// Individual ticket price
     pub ticket_price: i128,
 }
@@ -335,7 +330,7 @@ let num_winners = attestation.prize_distribution_bp.len();
 let n = ticket_ids.len() as u64;
 
 // Build the u64 seed the same way the contract does (first 8 bytes of the
-// finalized seed — see build_internal_seed / PrngWinnerSelection for details).
+// finalized seed recorded in fairness metadata for details).
 let mut current_seed = seed;
 
 // Partial Fisher–Yates shuffle
@@ -399,6 +394,7 @@ for (i, ticket_id) in attestation.winning_ticket_ids.iter().enumerate() {
 ```
 
 This requires either:
+
 - Access to on-chain ticket records (if still in storage before wipe)
 - Trusted off-chain ticket ownership index
 - Reconstruction from `TicketPurchased` events
@@ -407,12 +403,12 @@ This requires either:
 
 Verification strength depends on the randomness source:
 
-| Source | Verification confirms | External trust needed |
-|---|---|---|
-| **External (VRF)** | Ed25519 signature over `(contract, request_id, seed)` binds oracle to unpredictable commitment | Oracle didn't collude with finalize timing |
-| **CommitReveal** | Seed derived from ticket-holder commits; verify commits via `CommitEntry(ticket_id)` storage | Enough participants committed unpredictable secrets |
-| **Internal** | Deterministic from ledger state; any validator could predict at finalize time | Finalizer timing wasn't adversarially chosen |
-| **Fallback** | Same as Internal (used when External oracle timed out) | Same trust model as Internal |
+| Source             | Verification confirms                                                                          | External trust needed                               |
+| ------------------ | ---------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| **External (VRF)** | Ed25519 signature over `(contract, request_id, seed)` binds oracle to unpredictable commitment | Oracle didn't collude with finalize timing          |
+| **CommitReveal**   | Seed derived from ticket-holder commits; verify commits via `CommitEntry(ticket_id)` storage   | Enough participants committed unpredictable secrets |
+| **Internal**       | Deterministic from ledger state; any validator could predict at finalize time                  | Finalizer timing wasn't adversarially chosen        |
+| **Fallback**       | Same as Internal (used when External oracle timed out)                                         | Same trust model as Internal                        |
 
 For External/VRF draws, verify the Ed25519 signature:
 
@@ -437,32 +433,32 @@ env.crypto().ed25519_verify(
 fn audit_raffle_draw(env: &Env, raffle_contract: &Address) -> Result<AuditReport, Error> {
     // 1. Fetch attestation
     let attestation = contract_client.get_draw_attestation(env)?;
-    
+
     // 2. Verify config hash
     let config_valid = verify_config_hash(&attestation);
-    
+
     // 3. Verify metadata hash
     let metadata_valid = verify_metadata_hash(&attestation)?;
-    
+
     // 4. Reproduce winner selection
     let reproduced = reproduce_winners(
         attestation.fairness_data.seed,
         attestation.fairness_data.ticket_ids,
         attestation.prize_distribution_bp.len()
     );
-    
+
     let winners_match = reproduced == attestation.winning_ticket_ids;
-    
+
     // 5. Check winner ownership (if tickets still in storage)
     let owners_match = verify_winner_ownership(env, raffle_contract, &attestation)?;
-    
+
     // 6. Verify VRF proof if External source
     let vrf_valid = if attestation.randomness_source == RandomnessSource::External {
         verify_vrf_proof(env, &attestation)?
     } else {
         true // N/A for Internal/CommitReveal
     };
-    
+
     Ok(AuditReport {
         config_hash_valid: config_valid,
         metadata_hash_valid,
@@ -475,12 +471,15 @@ fn audit_raffle_draw(env: &Env, raffle_contract: &Address) -> Result<AuditReport
 ```
 
 ### When to Verify
+
 ## 3. Last-Submitter Bias
 
 The primary security challenge in threshold-based randomness protocols is **Last-Submitter Bias** (or Last-Revealer Bias).
 
 ### The Attack Vector
+
 When $k-1$ oracles have submitted their seeds on-chain, those seeds are public. The $k$-th oracle (the last submitter required to reach the threshold) can:
+
 1. Read the $k-1$ public seeds.
 2. Precompute the combined raffle seed for different values of their own seed, or simply calculate the single outcome of their submission.
 3. Determine the winning ticket based on that combined seed.
@@ -489,7 +488,9 @@ When $k-1$ oracles have submitted their seeds on-chain, those seeds are public. 
 ### Mitigations in Tikka Contracts
 
 #### 1. Independent Cryptographic Seeds
+
 No single oracle can force the final seed to be a specific desired value. Because the final seed is a hash of all $k$ seeds, changing the $k$-th seed changes the final hash in an unpredictable way (due to the avalanche effect of cryptographic hash functions). The last submitter can only choose between two options:
+
 - Submit their honest seed and accept the resulting winner.
 - Abort/withhold the transaction, preventing the draw from finishing.
 
@@ -518,7 +519,6 @@ Medium-stakes raffles where buyers can be asked to commit, and you want stronger
 5. Once at least $k$ unique registered oracles have submitted valid seeds, the contract aggregates all delivered seeds via SHA-256 over their concatenated big-endian bytes (`aggregate_quorum_seeds`) to form the final 64-bit seed.
 6. The raffle is finalized via `do_finalize_with_seed` using the aggregated VRF seed.
 
-
 ## K-of-N Quorum Randomness Scheme
 
 To eliminate single-oracle trust assumptions in high-stakes raffles, the contract supports a `Quorum` randomness mode.
@@ -542,10 +542,10 @@ To eliminate single-oracle trust assumptions in high-stakes raffles, the contrac
 
 If fewer than $k$ oracles deliver valid seeds before `request_ledger + 200`:
 
-| `trigger_randomness_fallback(..., do_refund)` | Result |
-|---|---|
-| `do_refund = true` | Status → `Cancelled` (`CancelReason::OracleTimeout`); clears request & quorum state |
-| `do_refund = false` | Finalize with **Internal** u64 seed and `RandomnessType::Fallback` |
+| `trigger_randomness_fallback(..., do_refund)` | Result                                                                              |
+| --------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `do_refund = true`                            | Status → `Cancelled` (`CancelReason::OracleTimeout`); clears request & quorum state |
+| `do_refund = false`                           | Finalize with **Internal** u64 seed and `RandomnessType::Fallback`                  |
 
 ---
 
@@ -560,6 +560,7 @@ When `RaffleConfig.unique_winners` is enabled, each participant address may win 
 $$\text{candidate\_index} = (\text{initial\_index} + \text{step}) \pmod{\text{total\_tickets}} \quad \text{for } \text{step} \in [0, \text{total\_tickets})$$
 
 For each `candidate_index`:
+
 1. Retrieve the ticket owner via `get_ticket_owner(env, candidate_index + 1)`.
 2. Check if the owner is already present in `winners`.
 3. If the owner is distinct (not in `winners`), select `candidate_index` as the winner for that tier and break.
@@ -572,7 +573,6 @@ For each `candidate_index`:
 
 ---
 
-
 ## Guidance thresholds
 
 These are **policy recommendations** aligned with README / code comments.
@@ -580,11 +580,11 @@ The Internal row below is now also an **on-chain enforced limit**
 (`MAX_INTERNAL_RANDOMNESS_PRIZE_AMOUNT`); the other rows remain
 recommendations only:
 
-| Prize / risk profile | Suggested mode |
-|---|---|
-| Demo, tiny rewards, trusted community (**enforced ≤ ~500 XLM for Internal**) | **Internal** |
-| Meaningful value, engaged ticket buyers | **CommitReveal** (+ document commit UX) |
-| Large prizes, public adversarial setting, institutional | **External** (+ monitored oracle, tested fallback) |
+| Prize / risk profile                                                         | Suggested mode                                     |
+| ---------------------------------------------------------------------------- | -------------------------------------------------- |
+| Demo, tiny rewards, trusted community (**enforced ≤ ~500 XLM for Internal**) | **Internal**                                       |
+| Meaningful value, engaged ticket buyers                                      | **CommitReveal** (+ document commit UX)            |
+| Large prizes, public adversarial setting, institutional                      | **External** (+ monitored oracle, tested fallback) |
 
 Also consider:
 
@@ -596,36 +596,36 @@ Also consider:
 
 ## Failure modes summary
 
-| Mode | Primary failure mode | Protocol response |
-|---|---|---|
-| Internal | Biased finalize timing | None (inherent) |
-| Internal | `prize_amount` above `MAX_INTERNAL_RANDOMNESS_PRIZE_AMOUNT` | Rejected at `init`/`create_raffle` (`RandomnessSourceTooWeakForPrize`) |
-| External | Oracle silent | After 200 ledgers: refund cancel **or** Internal fallback |
-| External | Wrong `request_id` / bad proof | Tx rejects (`InvalidParameters` / crypto fail) |
-| CommitReveal | No commits | Internal u64 seed fallback |
-| Any | `tickets_sold < min_tickets` or zero sold | `Failed` + `RaffleFailed` (no draw) |
-| Any | Concurrent finalize | `DrawingLock` → `DrawingAlreadyInProgress` |
+| Mode         | Primary failure mode                                        | Protocol response                                                      |
+| ------------ | ----------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Internal     | Biased finalize timing                                      | None (inherent)                                                        |
+| Internal     | `prize_amount` above `MAX_INTERNAL_RANDOMNESS_PRIZE_AMOUNT` | Rejected at `init`/`create_raffle` (`RandomnessSourceTooWeakForPrize`) |
+| External     | Oracle silent                                               | After 200 ledgers: refund cancel **or** Internal fallback              |
+| External     | Wrong `request_id` / bad proof                              | Tx rejects (`InvalidParameters` / crypto fail)                         |
+| CommitReveal | No commits                                                  | Internal u64 seed fallback                                             |
+| Any          | `tickets_sold < min_tickets` or zero sold                   | `Failed` + `RaffleFailed` (no draw)                                    |
+| Any          | Concurrent finalize                                         | `DrawingLock` → `DrawingAlreadyInProgress`                             |
 
 ---
 
 ## Code map
 
-| Concern | Location |
-|---|---|
-| Enum | `contracts/raffle-shared/src/lib.rs` → `RandomnessSource` |
-| Timeout constant | `contracts/raffle-shared/src/constants.rs` → `ORACLE_TIMEOUT_LEDGERS` |
-| Internal prize cap | `contracts/raffle-shared/src/constants.rs` → `MAX_INTERNAL_RANDOMNESS_PRIZE_AMOUNT`; `contracts/raffle-shared/src/lib.rs` → `exceeds_internal_randomness_cap` |
-| Seed + strategies | `contracts/raffle-instance/src/randomness.rs` |
-| Finalize / oracle / fallback | `contracts/raffle-instance/src/draw.rs` |
-| Commits | `contracts/raffle-instance/src/tickets.rs` → `submit_commit` |
-| Off-chain oracle | `oracle/` |
+| Concern                      | Location                                                                                                                                                      |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Enum                         | `contracts/raffle-shared/src/lib.rs` → `RandomnessSource`                                                                                                     |
+| Timeout constant             | `contracts/raffle-shared/src/constants.rs` → `ORACLE_TIMEOUT_LEDGERS`                                                                                         |
+| Internal prize cap           | `contracts/raffle-shared/src/constants.rs` → `MAX_INTERNAL_RANDOMNESS_PRIZE_AMOUNT`; `contracts/raffle-shared/src/lib.rs` → `exceeds_internal_randomness_cap` |
+| Seed + strategies            | `contracts/raffle-instance/src/randomness.rs`                                                                                                                 |
+| Finalize / oracle / fallback | `contracts/raffle-instance/src/draw.rs`                                                                                                                       |
+| Commits                      | `contracts/raffle-instance/src/tickets.rs` → `submit_commit`                                                                                                  |
+| Off-chain oracle             | `oracle/`                                                                                                                                                     |
 
 ## Related docs
 
-- [COMMIT_REVEAL.md](COMMIT_REVEAL.md) — commit/reveal protocol details  
-- [STORAGE.md](STORAGE.md) — randomness-related keys and tiers  
-- [ARCHITECTURE.md](ARCHITECTURE.md) — factory → instance → oracle flow  
-- [EVENTS.md](EVENTS.md) — `RandomnessRequested`, `RandomnessReceived`, fallback events  
+- [COMMIT_REVEAL.md](COMMIT_REVEAL.md) — commit/reveal protocol details
+- [STORAGE.md](STORAGE.md) — randomness-related keys and tiers
+- [ARCHITECTURE.md](ARCHITECTURE.md) — factory → instance → oracle flow
+- [EVENTS.md](EVENTS.md) — `RandomnessRequested`, `RandomnessReceived`, fallback events
 
 ---
 
@@ -669,31 +669,31 @@ The `DrawAttestation` struct combines everything needed for verification:
 pub struct DrawAttestation {
     /// Seed, ticket IDs, winning indices, timestamp, sequence
     pub fairness_data: FairnessData,
-    
+
     /// SHA-256 hash of off-chain metadata
     pub metadata_hash: BytesN<32>,
-    
+
     /// Winner addresses in prize-tier order
     pub winner_addresses: Vec<Address>,
-    
+
     /// Winning ticket IDs (1-indexed) in tier order
     pub winning_ticket_ids: Vec<u32>,
-    
+
     /// Randomness source (Internal, External, CommitReveal)
     pub randomness_source: RandomnessSource,
-    
+
     /// SHA-256 hash of effective config at draw time
     pub config_hash: BytesN<32>,
-    
+
     /// Total tickets sold
     pub total_tickets_sold: u32,
-    
+
     /// Prize distribution basis points
     pub prize_distribution_bp: Vec<u32>,
-    
+
     /// Total prize amount
     pub prize_amount: i128,
-    
+
     /// Individual ticket price
     pub ticket_price: i128,
 }
@@ -786,6 +786,7 @@ for (i, ticket_id) in attestation.winning_ticket_ids.iter().enumerate() {
 ```
 
 This requires either:
+
 - Access to on-chain ticket records (if still in storage before wipe)
 - Trusted off-chain ticket ownership index
 - Reconstruction from `TicketPurchased` events
@@ -794,12 +795,12 @@ This requires either:
 
 Verification strength depends on the randomness source:
 
-| Source | Verification confirms | External trust needed |
-|---|---|---|
-| **External (VRF)** | Ed25519 signature over `(contract, request_id, seed)` binds oracle to unpredictable commitment | Oracle didn't collude with finalize timing |
-| **CommitReveal** | Seed derived from ticket-holder commits; verify commits via `CommitEntry(ticket_id)` storage | Enough participants committed unpredictable secrets |
-| **Internal** | Deterministic from ledger state; any validator could predict at finalize time | Finalizer timing wasn't adversarially chosen |
-| **Fallback** | Same as Internal (used when External oracle timed out) | Same trust model as Internal |
+| Source             | Verification confirms                                                                          | External trust needed                               |
+| ------------------ | ---------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| **External (VRF)** | Ed25519 signature over `(contract, request_id, seed)` binds oracle to unpredictable commitment | Oracle didn't collude with finalize timing          |
+| **CommitReveal**   | Seed derived from ticket-holder commits; verify commits via `CommitEntry(ticket_id)` storage   | Enough participants committed unpredictable secrets |
+| **Internal**       | Deterministic from ledger state; any validator could predict at finalize time                  | Finalizer timing wasn't adversarially chosen        |
+| **Fallback**       | Same as Internal (used when External oracle timed out)                                         | Same trust model as Internal                        |
 
 For External/VRF draws, verify the Ed25519 signature:
 
@@ -824,32 +825,32 @@ env.crypto().ed25519_verify(
 fn audit_raffle_draw(env: &Env, raffle_contract: &Address) -> Result<AuditReport, Error> {
     // 1. Fetch attestation
     let attestation = contract_client.get_draw_attestation(env)?;
-    
+
     // 2. Verify config hash
     let config_valid = verify_config_hash(&attestation);
-    
+
     // 3. Verify metadata hash
     let metadata_valid = verify_metadata_hash(&attestation)?;
-    
+
     // 4. Reproduce winner selection
     let reproduced = reproduce_winners(
         attestation.fairness_data.seed,
         attestation.fairness_data.ticket_ids,
         attestation.prize_distribution_bp.len()
     );
-    
+
     let winners_match = reproduced == attestation.winning_ticket_ids;
-    
+
     // 5. Check winner ownership (if tickets still in storage)
     let owners_match = verify_winner_ownership(env, raffle_contract, &attestation)?;
-    
+
     // 6. Verify VRF proof if External source
     let vrf_valid = if attestation.randomness_source == RandomnessSource::External {
         verify_vrf_proof(env, &attestation)?
     } else {
         true // N/A for Internal/CommitReveal
     };
-    
+
     Ok(AuditReport {
         config_hash_valid: config_valid,
         metadata_hash_valid,
@@ -876,16 +877,18 @@ fn audit_raffle_draw(env: &Env, raffle_contract: &Address) -> Result<AuditReport
 
 ### Code References
 
-| Component | Location |
-|---|---|
-| Attestation struct | `contracts/raffle-instance/src/attestation.rs` |
-| Public function | `contracts/raffle-instance/src/lib.rs` → `get_draw_attestation` |
+| Component                  | Location                                                                    |
+| -------------------------- | --------------------------------------------------------------------------- |
+| Attestation struct         | `contracts/raffle-instance/src/attestation.rs`                              |
+| Public function            | `contracts/raffle-instance/src/lib.rs` → `get_draw_attestation`             |
 | Winner selection algorithm | `contracts/raffle-instance/src/randomness.rs` → `OracleSeedWinnerSelection` |
-| Fairness metadata storage | `contracts/raffle-instance/src/helpers.rs` → `do_finalize_with_seed` |
-| VRF proof verification | `contracts/raffle-instance/src/draw.rs` → `provide_randomness` |
+| Fairness metadata storage  | `contracts/raffle-instance/src/helpers.rs` → `do_finalize_with_seed`        |
+| VRF proof verification     | `contracts/raffle-instance/src/draw.rs` → `provide_randomness`              |
 
 #### 3. Timeouts and Default Fallbacks
+
 To prevent a malicious or lazy $k$-th oracle from holding the raffle hostage indefinitely, the contract implements:
+
 - **Draw Timeouts**: If a quorum is not reached within a specified block window, the raffle can be cancelled, and all ticket buyers are refunded.
 - **Slashed Stake / Operator Penalties**: Node operators who fail to submit within the timeout window can be penalized on-chain or removed from the active oracle set.
 
@@ -893,10 +896,11 @@ To prevent a malicious or lazy $k$-th oracle from holding the raffle hostage ind
 
 ## 4. Internal Seed Construction (Draw Seed)
 
-For deterministic winner selection, the contract derives an internal seed by hashing the XDR encoding of a tuple containing the ledger timestamp, ledger sequence number, network identifier, and raffle contract address.
+For deterministic winner selection, `build_internal_seed_u64(env)` hashes the XDR encoding of the ledger timestamp, ledger sequence, network ID, and raffle contract address.
 
 ### Byte Layout
-The raw value fed to `hash_bytes32`is the XDR serialization of:
+
+The raw value passed to SHA-256 is the XDR serialization of:
 
 ```
 (timestamp: u64, sequence: u32, network_id: BytesN<32>, raffle_address: Address)
@@ -906,9 +910,9 @@ Where:
 
 - `timestamp` is `env.ledger().timestamp()`.
 - `sequence` is `env.ledger().sequence()`.
-- `network_id` is `env.network_id()`, which is the network passphrase identifier (e.g. main, 4testnet, futurenet). This ensures that identical raffle parameters produce different draws on different networks.
+- `network_id` is `env.ledger().network_id()`, the 32-byte network identifier. This ensures that identical raffle and ledger state produce different draws on different networks.
 - `raffle_address` is the current contract address (`env.current_contract_address()`), which uniquely identifies the raffle instance.
 
-The XDR tuple is hashed using SHA-256 (`hash_bytes32`). The returned `BytesN<32>` seed is converted to the `u64` internal seed by taking the first 8 bytes of the SHA-256 output and interpreting them as a big-endian integer.
+The XDR tuple is hashed using SHA-256. The first 8 bytes of the hash are interpreted as a big-endian `u64`, which is passed to `OracleSeedWinnerSelection`.
 
-This is the only internal seed construction in the crate; all callers use `build_internal_seed_u64(env, &env.current_contract_address())`.
+This is the only internal seed construction in the crate; callers use `build_internal_seed_u64(env)`.
