@@ -230,12 +230,19 @@ export class OraclePipeline {
 }
 
 export function createPipeline(config: OracleConfig, options: Partial<PipelineOptions> & { alerter: Alerter }): OraclePipeline {
-  return new OraclePipeline({
+  const pipelineOptions: PipelineOptions = {
     config,
     alerter: options.alerter,
-    checkpointStore: options.checkpointStore,
-    dedupStore: options.dedupStore,
-  });
+  };
+
+  if (options.checkpointStore !== undefined) {
+    pipelineOptions.checkpointStore = options.checkpointStore;
+  }
+  if (options.dedupStore !== undefined) {
+    pipelineOptions.dedupStore = options.dedupStore;
+  }
+
+  return new OraclePipeline(pipelineOptions);
 }
 
 
