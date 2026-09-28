@@ -483,7 +483,7 @@ fn unique_winners_limits_one_tier_per_address() {
     env.ledger().set_timestamp(1_000);
 
     let contract_id = env.register(crate::Contract, ());
-    let client = crate::ContractClient::new(&env, &contract_id);
+    let client = ContractClient::new(&env, &contract_id);
     let factory = Address::generate(&env);
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);

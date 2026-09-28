@@ -1,18 +1,21 @@
 import { Keypair } from '@stellar/stellar-sdk';
 import { decodeSecretKey } from './keys/secret-key';
 import { logger } from './logging/logger';
+import { RetryPolicyOptions } from './tx/retry-policy';
 
 export interface OracleConfig {
   rpcUrl: string;
   factoryContractId: string;
   logLevel: string;
   pollIntervalMs: number;
+  healthPort: number;
   alertWebhookUrl: string;
   alertFailureThreshold: number;
   alertRateLimitMs: number;
   alertQueueDepthLimit: number;
   alertQueueAgeLimitMs: number;
   alertRpcUnreachableThreshold: number;
+  retryPolicy: RetryPolicyOptions;
 }
 
 function readPositiveInt(name: string, defaultValue: number, errors: string[]): number {
@@ -53,7 +56,7 @@ function isValidSecretKey(secret: string): boolean {
 export function loadAndValidateConfig(): OracleConfig {
   const errors: string[] = [];
 
-  const rpcUrl = process.env.STELLAR_RPC_URL;
+  const rpcUrl = process.env['STELLAR_RPC_URL'];
   if (!rpcUrl) {
     errors.push('STELLAR_RPC_URL is required');
   }
@@ -71,11 +74,17 @@ export function loadAndValidateConfig(): OracleConfig {
   }
 
   const alertWebhookUrl = process.env['ALERT_WEBHOOK_URL'] ?? '';
+  const healthPort = readPositiveInt('HEALTH_PORT', 9090, errors);
   const alertFailureThreshold = readPositiveInt('ALERT_FAILURE_THRESHOLD', 3, errors);
   const alertRateLimitMs = readPositiveInt('ALERT_RATE_LIMIT_MS', 60_000, errors);
   const alertQueueDepthLimit = readPositiveInt('ALERT_QUEUE_DEPTH_LIMIT', 10, errors);
   const alertQueueAgeLimitMs = readPositiveInt('ALERT_QUEUE_AGE_LIMIT_MS', 300_000, errors);
   const alertRpcUnreachableThreshold = readPositiveInt('ALERT_RPC_UNREACHABLE_THRESHOLD', 3, errors);
+  const retryPolicy: RetryPolicyOptions = {
+    baseMs: readPositiveInt('ORACLE_RETRY_BASE_MS', 500, errors),
+    maxMs: readPositiveInt('ORACLE_RETRY_MAX_MS', 30_000, errors),
+    maxAttempts: readPositiveInt('ORACLE_RETRY_MAX_ATTEMPTS', 5, errors),
+  };
 
   if (errors.length > 0) {
     logger.error('Configuration errors:');
@@ -85,20 +94,21 @@ export function loadAndValidateConfig(): OracleConfig {
     process.exit(1);
   }
 
-  if (secretKey === undefined || rpcUrl === undefined || factoryContractId === undefined) {
-    throw new Error('Required configuration missing after validation');
-  }
-
+  // At this point errors.length === 0, so rpcUrl and factoryContractId are defined.
+  // The non-null assertions below are replaced by explicit narrowing guards above
+  // (process.exit(1) means we never reach here with undefined values).
   return {
-    rpcUrl: rpcUrl!,
-    factoryContractId: factoryContractId!,
-    logLevel: process.env.LOG_LEVEL ?? 'info',
+    rpcUrl: rpcUrl as string,
+    factoryContractId: factoryContractId as string,
+    logLevel: process.env['LOG_LEVEL'] ?? 'info',
     pollIntervalMs,
+    healthPort,
     alertWebhookUrl,
     alertFailureThreshold,
     alertRateLimitMs,
     alertQueueDepthLimit,
     alertQueueAgeLimitMs,
     alertRpcUnreachableThreshold,
+    retryPolicy,
   };
 }

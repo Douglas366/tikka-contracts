@@ -101,6 +101,7 @@ use soroban_sdk::{xdr::ToXdr, Address, Bytes, BytesN, Env, Vec};
 ///
 /// See also: module-level documentation and
 /// [`docs/RANDOMNESS.md`](../../../../docs/RANDOMNESS.md).
+#[allow(dead_code)]
 pub fn build_internal_seed(env: &Env, raffle_id: &Address) -> BytesN<32> {
     let timestamp = env.ledger().timestamp();
     let sequence = env.ledger().sequence();
@@ -118,6 +119,7 @@ pub fn build_internal_seed(env: &Env, raffle_id: &Address) -> BytesN<32> {
 /// A zero hash would be indistinguishable from a crypto subsystem failure, so
 /// this function panics rather than returning silently — a zeroed seed would
 /// make winner selection trivially reproducible and insecure.
+#[allow(dead_code)]
 fn hash_bytes32(env: &Env, input: &Bytes) -> BytesN<32> {
     let hash: BytesN<32> = env.crypto().sha256(input).into();
     if hash.to_array() == [0u8; 32] {
@@ -133,6 +135,7 @@ fn hash_bytes32(env: &Env, input: &Bytes) -> BytesN<32> {
 /// [`do_finalize_with_seed`](crate::helpers::do_finalize_with_seed) can
 /// select winners through a single call-site regardless of the randomness
 /// source.
+#[allow(dead_code)]
 pub trait WinnerSelectionStrategy {
     /// Return `winner_count` distinct zero-based ticket indices chosen
     /// uniformly at random from `[0, total_tickets)`.
@@ -152,6 +155,7 @@ pub trait WinnerSelectionStrategy {
 ///
 /// **For low-stakes raffles only** — see [`build_internal_seed`] and the
 /// module documentation for the full security caveat.
+#[allow(dead_code)]
 pub struct PrngWinnerSelection {
     pub raffle_id: Address,
     /// Number of tickets sold at draw time, mixed into the seed so that
@@ -160,6 +164,7 @@ pub struct PrngWinnerSelection {
     pub tickets_sold: u32,
 }
 
+#[allow(dead_code)]
 impl PrngWinnerSelection {
     /// Create a new `PrngWinnerSelection` for the given raffle and ticket count.
     pub fn new(raffle_id: Address, tickets_sold: u32) -> Self {
@@ -205,7 +210,7 @@ impl WinnerSelectionStrategy for PrngWinnerSelection {
         }
 
         let effective_count = winner_count.min(total_tickets) as usize;
-        let mut drawn_count: usize = 0;
+        let drawn_count: usize = 0;
 
         // Draw up to total_tickets times, collecting unique indices until we have
         // effective_count winners.  This is bounded by total_tickets iterations
@@ -339,7 +344,7 @@ impl OracleSeedWinnerSelection {
         for _ in 0..effective_count {
             // Generate an unbiased u64 in [0, remaining) using rejection sampling.
             let largest_multiple_remaining = (u64::MAX / remaining) * remaining;
-            let mut candidate = loop {
+            let candidate = loop {
                 if current_seed < largest_multiple_remaining {
                     break current_seed;
                 }
@@ -392,6 +397,11 @@ impl OracleSeedWinnerSelection {
     }
 
     /// Select distinct zero-based winner indices from the provided ticket range.
+    ///
+    /// Mirrors [`select_winner_indices_pure`] exactly: partial Fisher-Yates
+    /// shuffle over a virtual deck, with rejection sampling per step to
+    /// eliminate modulo bias.  `current_seed` is hoisted above the loop so
+    /// the LCG state advances across draws instead of resetting each iteration.
     pub fn select_winner_indices(
         &self,
         env: &Env,
@@ -404,18 +414,18 @@ impl OracleSeedWinnerSelection {
         }
 
         let effective_count = winner_count.min(total_tickets) as usize;
-        let mut drawn_count: usize = 0;
 
-        // Draw up to total_tickets times, collecting unique indices until we have
-        // effective_count winners.  This is bounded by total_tickets iterations
-        // (no unbounded loop), and guarantees exactly effective_count distinct indices.
-        let mut drawn: Vec<u32> = Vec::new(env);
-        for _ in 0..total_tickets {
-            // Generate an unbiased u64 in [0, total_tickets) using rejection sampling.
-            let n = total_tickets as u64;
-            let largest_multiple = (u64::MAX / n) * n;
-            let mut current_seed = self.seed;
-            let mut candidate = loop {
+        // Partial Fisher-Yates: shrinking deck tracked via (position, mapped_value) swaps.
+        // Hoisted outside the loop so the LCG state advances across draws.
+        let mut remaining = total_tickets as u64;
+        let mut current_seed = self.seed;
+        // Swap log: (virtual_position, actual_index) pairs — at most effective_count entries.
+        let mut swaps: Vec<(u64, u64)> = Vec::new(env);
+
+        for _ in 0..effective_count {
+            // Rejection-sample an unbiased value in [0, remaining).
+            let largest_multiple = (u64::MAX / remaining) * remaining;
+            let candidate = loop {
                 if current_seed < largest_multiple {
                     break current_seed;
                 }
@@ -423,24 +433,47 @@ impl OracleSeedWinnerSelection {
                     .wrapping_mul(6364136223846793005)
                     .wrapping_add(1442695040888963407);
             };
-            let idx = (candidate % n) as u32;
 
-            // Check if already drawn (linear scan - O(k) per check, k <= MAX_PRIZES <= 100)
-            let mut duplicate = false;
-            for d in drawn.iter() {
-                if d == idx {
-                    duplicate = true;
+            let r = candidate % remaining;
+
+            // Resolve virtual position r to its actual index via swap log.
+            let mut actual = r;
+            for i in 0..swaps.len() {
+                let (pos, val) = swaps.get(i).unwrap();
+                if pos == actual {
+                    actual = val;
+                    break;
+                }
+            }
+            indices.push_back(actual as u32);
+
+            // Fisher-Yates swap: position r ← what was at position remaining-1.
+            let last = remaining - 1;
+            let mut last_actual = last;
+            for i in 0..swaps.len() {
+                let (pos, val) = swaps.get(i).unwrap();
+                if pos == last {
+                    last_actual = val;
                     break;
                 }
             }
 
-            if !duplicate {
-                drawn.push_back(idx);
-                indices.push_back(idx);
-                if drawn_count >= effective_count {
+            // Record the swap, overwriting any existing entry for position r.
+            let mut found: Option<u32> = None;
+            for i in 0..swaps.len() {
+                let (pos, _) = swaps.get(i).unwrap();
+                if pos == r {
+                    found = Some(i);
                     break;
                 }
             }
+            if let Some(i) = found {
+                swaps.set(i, (r, last_actual));
+            } else {
+                swaps.push_back((r, last_actual));
+            }
+
+            remaining -= 1;
         }
 
         indices
@@ -659,5 +692,55 @@ mod tests {
             aggregate_quorum_seeds(&env, &v)
         });
         assert_eq!(result, 0);
+    }
+
+    /// Acceptance criterion from #1007: a 5-tier draw over 100 tickets must
+    /// return exactly 5 distinct indices.  Also confirms the on-chain and pure
+    /// variants agree for the same seed.
+    #[test]
+    fn oracle_seed_multi_winner_returns_distinct_indices() {
+        // pure variant (no Env needed)
+        let strategy = OracleSeedWinnerSelection::new(0xDEAD_BEEF_CAFE_1234);
+        let pure_indices = strategy.select_winner_indices_pure(100, 5);
+        assert_eq!(pure_indices.len(), 5, "pure: expected 5 winners");
+        let mut seen = std::collections::HashSet::new();
+        for &idx in &pure_indices {
+            assert!(idx < 100, "pure: index {idx} out of range");
+            assert!(seen.insert(idx), "pure: duplicate index {idx}");
+        }
+
+        // on-chain variant must agree
+        let env = Env::default();
+        let contract = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
+        let on_chain_indices = env.as_contract(&contract, || {
+            strategy.select_winner_indices(&env, 100, 5)
+        });
+        assert_eq!(on_chain_indices.len(), 5, "on-chain: expected 5 winners");
+        let mut seen2 = std::collections::HashSet::new();
+        for i in 0..on_chain_indices.len() {
+            let idx = on_chain_indices.get(i).unwrap();
+            assert!(idx < 100, "on-chain: index {idx} out of range");
+            assert!(seen2.insert(idx), "on-chain: duplicate index {idx}");
+        }
+        // Both paths must produce the same winner set.
+        let pure_set: std::collections::HashSet<u32> = pure_indices.into_iter().collect();
+        assert_eq!(seen2, pure_set, "on-chain and pure variants disagree");
+    }
+
+    /// Smoke-test: single winner draw still works correctly after the fix.
+    #[test]
+    fn oracle_seed_single_winner_in_range() {
+        let env = Env::default();
+        let contract = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
+        let strategy = OracleSeedWinnerSelection::new(42);
+        let indices = env.as_contract(&contract, || {
+            strategy.select_winner_indices(&env, 100, 1)
+        });
+        assert_eq!(indices.len(), 1);
+        assert!(indices.get(0).unwrap() < 100);
     }
 }

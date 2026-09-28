@@ -12,6 +12,7 @@ is byte-identical every run, so it can be diffed in CI.
 Usage:
     python scripts/generate_error_docs.py
 """
+"""Deterministically generate ``docs/ERRORS.md`` from ProtocolError."""
 
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DOCS = REPO_ROOT / "docs"
+CATALOG = REPO_ROOT / "contracts" / "raffle-shared" / "src" / "errors.rs"
 
 # (source file, enum identifier, section title)
 ENUMS: list[tuple[str, str, str]] = [
@@ -53,6 +55,33 @@ def parse_error_enum(file_path: Path, enum_name: str) -> list[tuple[int, str]]:
         for m in re.finditer(r"(\w+)\s*=\s*(\d+)", match.group(1))
     ]
     errors.sort(key=lambda x: x[0])
+def parse_protocol_errors():
+    """Parse catalog entries as (catalog code, name, contract ABI code)."""
+    content = CATALOG.read_text(encoding="utf-8")
+    match = re.search(r"pub enum ProtocolError\s*\{(.*?)\}", content, re.DOTALL)
+    if not match:
+        print(f"Error: Could not find ProtocolError in {CATALOG}", file=sys.stderr)
+        sys.exit(1)
+
+    errors = []
+    pattern = re.compile(
+        r"^[ \t]*(\w+)[ \t]*=[ \t]*(\d+),"
+        r"[ \t]*(?://[ \t]*factory original:[ \t]*(\d+))?[ \t]*$",
+        re.MULTILINE,
+    )
+    for entry in pattern.finditer(match.group(1)):
+        catalog_code = int(entry.group(2))
+        name = entry.group(1)
+        factory_abi_code = entry.group(3)
+        if name.startswith("Factory"):
+            if factory_abi_code is None:
+                print(f"Error: Missing factory ABI code for {name}", file=sys.stderr)
+                sys.exit(1)
+            errors.append((catalog_code, name[len("Factory"):], int(factory_abi_code)))
+        elif catalog_code < 100:
+            errors.append((catalog_code, name, catalog_code))
+
+    errors.sort(key=lambda error: error[0])
     return errors
 
 
@@ -111,6 +140,7 @@ INSTANCE_DESCRIPTIONS: dict[str, str] = {
     "CancelNotScheduled": "No cancellation is scheduled",
     "OracleNotRegistered": "Caller is not a registered oracle for this raffle",
     "DuplicateOracleSubmission": "This oracle has already submitted its seed",
+    "CommitAlreadySubmitted": "A commit has already been submitted for this draw",
 }
 
 INSTANCE_MESSAGES: dict[str, str] = {
@@ -168,6 +198,7 @@ INSTANCE_MESSAGES: dict[str, str] = {
     "CancelNotScheduled": "No cancellation is scheduled",
     "OracleNotRegistered": "Caller is not a registered oracle for this raffle",
     "DuplicateOracleSubmission": "This oracle has already submitted its seed",
+    "CommitAlreadySubmitted": "This oracle has already committed for this draw",
 }
 
 FACTORY_DESCRIPTIONS: dict[str, str] = {
@@ -190,6 +221,8 @@ FACTORY_DESCRIPTIONS: dict[str, str] = {
     "MaxRoundsReached": "Maximum rounds reached",
     "RecurringInactive": "Recurring raffle is inactive",
     "CreationPaused": "Raffle creation is paused",
+    "CallerNotRegisteredRaffle": "Caller is not a raffle registered by this factory",
+    "RandomnessSourceTooWeakForPrize": "Randomness source is too weak for the configured prize",
 }
 
 FACTORY_MESSAGES: dict[str, str] = {
@@ -212,6 +245,8 @@ FACTORY_MESSAGES: dict[str, str] = {
     "MaxRoundsReached": "Maximum rounds reached",
     "RecurringInactive": "Recurring raffle is inactive",
     "CreationPaused": "Raffle creation is paused",
+    "CallerNotRegisteredRaffle": "Caller is not a registered raffle",
+    "RandomnessSourceTooWeakForPrize": "Randomness source is too weak for this prize",
 }
 
 
@@ -224,10 +259,11 @@ def markdown_table(
         "| Code | Error | Description | Frontend Message |",
         "| ---- | ----- | ----------- | ---------------- |",
     ]
-    for code, name in errors:
+    for _, abi_code, name in errors:
         desc = descriptions.get(name, "TODO: Add description")
         msg = messages.get(name, "TODO: Add message")
         lines.append(f'| {code} | `{name}` | {desc} | "{msg}" |')
+        lines.append(f"| {abi_code} | `{name}` | {desc} | \"{msg}\" |")
     return "\n".join(lines)
 
 
@@ -238,7 +274,7 @@ def typescript_mapping(instance_errors: list[tuple[int, str]]) -> str:
         "```typescript",
         "const errorMessages: Record<number, string> = {",
     ]
-    for code, name in instance_errors:
+    for _, code, name in instance_errors:
         msg = INSTANCE_MESSAGES.get(name, "TODO: Add message")
         lines.append(f'  {code}: "{msg}",')
     lines.append("};")
@@ -264,8 +300,20 @@ def main() -> None:
 
     header = """\
 # Error Codes
+def main():
+    protocol_errors = parse_protocol_errors()
+    instance_errors = [error for error in protocol_errors if error[0] < 100]
+    factory_errors = [error for error in protocol_errors if 200 <= error[0] <= 299]
+    sections = [
+        "## Instance Contract Errors\n\n"
+        + markdown_table(instance_errors, INSTANCE_DESCRIPTIONS, INSTANCE_MESSAGES),
+        "## Factory Contract Errors\n\n"
+        + markdown_table(factory_errors, FACTORY_DESCRIPTIONS, FACTORY_MESSAGES),
+    ]
 
-This document is **auto-generated** from the contract error enums. **Do not
+    header = """# Error Codes
+
+This document is **auto-generated** from `ProtocolError`. **Do not
 edit by hand.** Regenerate whenever error codes or descriptions change:
 
 ```bash
@@ -273,10 +321,10 @@ python scripts/generate_error_docs.py
 ```
 
 Sources of truth:
-- Instance errors: `Error` in
-  [`contracts/raffle-instance/src/lib.rs`](contracts/raffle-instance/src/lib.rs).
-- Factory errors: `ContractError` in
-  [`contracts/raffle-factory/src/lib.rs`](contracts/raffle-factory/src/lib.rs).
+- Canonical catalog: `ProtocolError` in
+    [`contracts/raffle-shared/src/errors.rs`](contracts/raffle-shared/src/errors.rs).
+- Factory ABI codes remain unchanged; the catalog records them next to each
+    namespaced factory code.
 
 ---
 

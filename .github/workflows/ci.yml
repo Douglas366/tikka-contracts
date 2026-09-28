@@ -64,6 +64,9 @@ jobs:
     - name: Check for Orphaned Modules
       run: make orphan-check
 
+    - name: Check Error Code Catalog
+      run: python3 scripts/check_error_codes.py
+
     # Build through the Stellar CLI so CI produces the same artifacts the deploy
     # scripts upload — previously CI built wasm32-unknown-unknown while
     # deploy-testnet.sh deployed wasm32v1-none (issue #841).
@@ -93,6 +96,9 @@ jobs:
 
     - name: Check Error Docs Sync
       run: make docs-errors
+      run: |
+        python3 scripts/generate_error_docs.py
+        git diff --exit-code docs/ERRORS.md || (echo "ERROR: docs/ERRORS.md is out of sync with ProtocolError in contracts/raffle-shared/src/errors.rs. Run 'python3 scripts/generate_error_docs.py' to update." && exit 1)
 
     - name: Check Events Docs Sync
       run: make docs-events

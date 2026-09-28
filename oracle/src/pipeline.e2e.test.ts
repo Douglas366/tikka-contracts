@@ -26,6 +26,7 @@ describe('OraclePipeline End-to-End', () => {
       alertQueueDepthLimit: 10,
       alertQueueAgeLimitMs: 300000,
       alertRpcUnreachableThreshold: 3,
+      retryPolicy: { baseMs: 500, maxMs: 30000, maxAttempts: 5 },
     };
 
     mockAlerter = new Alerter({ webhookUrl: '', rateLimitMs: 60000 });

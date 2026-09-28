@@ -1,6 +1,16 @@
 repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-merge-conflict
+
   - repo: local
     hooks:
+      - id: check-merge-labels
+        name: check bare branch labels
+        entry: python3 scripts/check_merge_labels.py
+        language: system
+        pass_filenames: false
       - id: cargo-fmt-check
         name: cargo fmt --check
         entry: cargo fmt --all -- --check
@@ -28,6 +38,11 @@ repos:
         language: system
         pass_filenames: false
         types: [python]
+      - id: check-duplicate-items
+        name: check duplicate Rust items
+        entry: python3 scripts/check_duplicate_items.py
+        language: system
+        pass_filenames: false
       - id: prettier-oracle
         name: prettier oracle
         entry: bash -lc 'cd oracle && npx prettier --check "**/*.{js,jsx,ts,tsx,json,md}"'

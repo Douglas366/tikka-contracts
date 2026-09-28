@@ -11,6 +11,10 @@ export default [
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/no-unused-vars': 'error',
       'no-console': 'error',
+      '@typescript-eslint/dot-notation': [
+        'error',
+        { allowIndexSignaturePropertyAccess: false },
+      ],
     },
   },
 ];

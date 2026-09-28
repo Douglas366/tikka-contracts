@@ -163,6 +163,7 @@ describe('Oracle Pipeline Integration - Happy Paths', () => {
       alertQueueDepthLimit: 10,
       alertQueueAgeLimitMs: 300000,
       alertRpcUnreachableThreshold: 3,
+      retryPolicy: { baseMs: 500, maxMs: 30000, maxAttempts: 5 },
     };
 
     const pipeline = createPipeline(config, {
@@ -206,6 +207,7 @@ describe('Oracle Pipeline Integration - Happy Paths', () => {
       alertQueueDepthLimit: 10,
       alertQueueAgeLimitMs: 300000,
       alertRpcUnreachableThreshold: 3,
+      retryPolicy: { baseMs: 500, maxMs: 30000, maxAttempts: 5 },
     };
 
     SorobanRpc.Server.prototype.getLatestLedger = async () => {
