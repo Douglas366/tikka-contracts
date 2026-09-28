@@ -1,6 +1,7 @@
 //! Ticket purchases, per-tx caps, pricing, pausing, and overflow guards.
 
 use super::*;
+use raffle_shared::RaffleConfigBuilder;
 
 #[test]
 fn ticket_number_matches_monotonic_id() {
@@ -47,6 +48,7 @@ fn buy_tickets_rejects_quantity_above_per_tx_cap() {
         prizes: vec![&env, 10000u32],
         randomness_source: RandomnessSource::Internal,
         oracle_address: None,
+        oracle_public_key: None,
         protocol_fee_bp: 0,
         treasury_address: None,
         swap_router: None,
@@ -105,6 +107,7 @@ fn buy_tickets_rejects_overflowing_total_price_without_wrapping() {
         prizes: vec![&env, 10000u32],
         randomness_source: RandomnessSource::Internal,
         oracle_address: None,
+        oracle_public_key: None,
         protocol_fee_bp: 0,
         treasury_address: None,
         swap_router: None,
@@ -175,6 +178,7 @@ fn setup_scale_raffle(
         prizes: vec![env, 10000u32],
         randomness_source: RandomnessSource::Internal,
         oracle_address: None,
+        oracle_public_key: None,
         protocol_fee_bp: 0,
         treasury_address: None,
         swap_router: None,
@@ -264,6 +268,7 @@ fn pause_resume_ticket_sales_controls_buy_tickets() {
         prizes: soroban_sdk::vec![&env, 10000],
         randomness_source: RandomnessSource::External,
         oracle_address: Some(Address::generate(&env)),
+        oracle_public_key: None,
         protocol_fee_bp: 0,
         treasury_address: None,
         swap_router: None,
@@ -341,6 +346,7 @@ fn test_bundle_pricing_applies() {
         prizes: soroban_sdk::vec![&env, 10000],
         randomness_source: RandomnessSource::Internal,
         oracle_address: None,
+        oracle_public_key: None,
         protocol_fee_bp: 0,
         treasury_address: None,
         swap_router: None,
@@ -393,32 +399,20 @@ fn test_bundle_pricing_applies() {
 /// `max_tickets` doubles as the sell-out threshold so `finalize_raffle` can be
 /// driven purely by ticket exhaustion (no deadline advance needed).
 fn lifecycle_config(env: &Env, payment_token: &Address, treasury: &Address) -> RaffleConfig {
-    RaffleConfig {
-        description: String::from_str(env, "Full lifecycle"),
-        end_time: 0,
-        no_deadline: true,
-        max_tickets: 3,
-        max_tickets_per_tx: 3,
-        min_tickets: 1,
-        allow_multiple: true,
-        ticket_price: MIN_TICKET_PRICE,
-        payment_token: payment_token.clone(),
-        prize_amount: MIN_TICKET_PRICE * 100,
-        prizes: soroban_sdk::vec![env, 10000],
-        randomness_source: RandomnessSource::Internal,
-        oracle_address: None,
-        protocol_fee_bp: 100, // 1% ticket-purchase fee → treasury
-        treasury_address: Some(treasury.clone()),
-        swap_router: None,
-        tikka_token: None,
-        unique_winners: false,
-            metadata_hash: BytesN::from_array(env, &[70u8; 32]),
-        claim_lockup_seconds: 0, // resolved to DEFAULT_CLAIM_LOCKUP_SECONDS
-        swap_deadline_seconds: 0,
-        early_bird_ticket_percentage: 0,
-        early_bird_discount_bp: 0,
-        category: None,
-    };
+    RaffleConfigBuilder::new(env, payment_token.clone())
+        .description(String::from_str(env, "Full lifecycle"))
+        .max_tickets(3)
+        .max_tickets_per_tx(3)
+        .ticket_price(MIN_TICKET_PRICE)
+        .prize_amount(MIN_TICKET_PRICE * 100)
+        .prizes(soroban_sdk::vec![env, 10000])
+        .protocol_fee_bp(100)
+        .treasury_address(Some(treasury.clone()))
+        .metadata_hash(BytesN::from_array(env, &[70u8; 32]))
+        .claim_lockup_seconds(0)
+        .swap_deadline_seconds(0)
+        .build()
+        .expect("valid lifecycle config")
 
     let result = client.try_init(&creator_factory_addr(&env), &admin, &creator, &config);
     assert_eq!(result, Err(Ok(Error::InvalidParameters)));
@@ -462,6 +456,7 @@ fn test_adversarial_ceiling_rounding() {
         prizes: soroban_sdk::vec![&env, 10000], // 100%
         randomness_source: RandomnessSource::Internal,
         oracle_address: None,
+        oracle_public_key: None,
         protocol_fee_bp: 1, // 1 basis point
         treasury_address: Some(Address::generate(&env)),
         swap_router: None,
@@ -537,6 +532,7 @@ fn setup_per_address_cap(
         prizes: vec![env, 10_000u32],
         randomness_source: RandomnessSource::Internal,
         oracle_address: None,
+        oracle_public_key: None,
         protocol_fee_bp: 0,
         treasury_address: None,
         swap_router: None,
@@ -712,6 +708,7 @@ fn cap_cannot_exceed_max_tickets() {
         prizes: vec![&env, 10_000u32],
         randomness_source: RandomnessSource::Internal,
         oracle_address: None,
+        oracle_public_key: None,
         protocol_fee_bp: 0,
         treasury_address: None,
         swap_router: None,
@@ -790,6 +787,7 @@ fn setup_with_deadline(env: &Env, end_time: u64) -> DeadlineSetup<'_> {
         prizes: vec![env, 10_000u32],
         randomness_source: RandomnessSource::Internal,
         oracle_address: None,
+        oracle_public_key: None,
         protocol_fee_bp: 0,
         treasury_address: None,
         swap_router: None,

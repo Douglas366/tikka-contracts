@@ -7,7 +7,8 @@ Thanks for your interest in contributing to Tikka! This project targets Stellar/
 1. Fork the repository and create a feature branch.
 2. Make your changes with clear, focused commits.
 3. Run `cargo fmt --all` to format code before committing.
-4. Run `make ci` to reproduce the full CI job list locally before pushing.
+4. Run tests locally before opening a PR.
+5. Run `make ci` before pushing to verify the full CI suite passes locally.
 5. Install the recommended VS Code extensions when prompted and keep format-on-save enabled.
 6. Install the local hooks with `pip install pre-commit && pre-commit install`.
 
@@ -78,6 +79,17 @@ also fail the generator.
 
 ## Continuous Integration
 
+Run the full CI suite locally before pushing:
+
+```bash
+make ci
+```
+
+This single target mirrors `.github/workflows/ci.yml` exactly — orphan check,
+formatting, contract build, WASM size gate, docs sync, clippy, tests, doc-tests,
+shellcheck, and the complete oracle pipeline (format, lint, typecheck, tests).
+If `make ci` is green, CI will be green.
+
 All CI jobs must pass before a pull request can merge. A red build blocks merge —
 there are no exceptions for individual jobs. Required checks on `master` are:
 
@@ -99,6 +111,11 @@ compile check or the coverage ratchet, which run on their own schedules.
 Repository admins must enable branch protection on `master` so these checks are
 required and branches must be up to date before merging. Workflow changes land in
 PRs first; enforcement is enabled once the pipeline is green.
+
+> **Keeping Make and CI in sync**: every CI step calls the corresponding `make`
+> target. Adding a check to CI therefore requires a matching Makefile target, and
+> vice versa — the two files are the single source of truth for what `make ci`
+> runs.
 
 ## Events Documentation Sync
 

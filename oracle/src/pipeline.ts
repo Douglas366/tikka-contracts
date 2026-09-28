@@ -9,6 +9,7 @@ import { GracefulShutdown } from './shutdown/graceful-shutdown';
 import { Alerter } from './alert/alerter';
 import { OracleConfig } from './config';
 import { QuorumService } from './quorum/quorum.service';
+import { childLogger } from './logging/logger';
 
 export interface PipelineOptions {
   config: OracleConfig;
@@ -28,7 +29,7 @@ export class OraclePipeline {
   private readonly gracefulShutdown: GracefulShutdown;
   private readonly alerter: Alerter;
   private readonly config: OracleConfig;
-  private quorumService!: QuorumService;
+  private quorumService?: QuorumService;
 
   private running = false;
 
@@ -43,10 +44,10 @@ export class OraclePipeline {
     // Note: initialize() is called in start() to allow async constructor pattern
 
     // Initialize checkpoint store
-    this.checkpointStore = checkpointStore ?? new FileLedgerCheckpointStore('./data/checkpoint.json');
+    this.checkpointStore = checkpointStore ?? new FileLedgerCheckpointStore(config.checkpointPath);
 
     // Initialize deduplication store
-    this.dedupStore = dedupStore ?? new DeduplicationStore('./data/dedup.json');
+    this.dedupStore = dedupStore ?? new DeduplicationStore(config.dedupPath);
 
     // Initialize request queue
     this.requestQueue = new RequestQueue();
@@ -59,6 +60,7 @@ export class OraclePipeline {
       rpcUrl: config.rpcUrl,
       alerter: this.alerter,
       failureThreshold: config.alertFailureThreshold,
+      retryPolicy: config.retryPolicy,
     });
 
     // Initialize event listener (public key will be available after initialize)
@@ -107,7 +109,7 @@ export class OraclePipeline {
 
     const oracleAddress = this.keyService.getPublicKey();
     const networkPassphrase = process.env.STELLAR_NETWORK_PASSPHRASE ?? 'Test Passphrase';
-    this.quorumService = new QuorumService(this.config.rpcUrl, networkPassphrase, oracleAddress);
+    this.quorumService = new QuorumService(this.config.rpcUrl, networkPassphrase, oracleAddress, this.config.rpcSimulateTimeoutMs);
 
     // Create event listener with actual public key
     this.eventListener = new EventListenerService(
@@ -127,6 +129,8 @@ export class OraclePipeline {
 
     // Register graceful shutdown handlers
     this.gracefulShutdown.register(() => this.eventListener.stopListening());
+    // Zeroize key material after all signing work is done but before exit.
+    this.gracefulShutdown.registerShutdownHook(() => this.keyService.shutdown());
 
 
 
@@ -151,6 +155,10 @@ export class OraclePipeline {
     }
 
     try {
+      if (!this.quorumService) {
+        throw new Error('Pipeline is not initialized: QuorumService is unavailable');
+      }
+
       // Check if we participate in Quorum or Single Oracle
       const quorumCheck = await this.quorumService.checkQuorumParticipation(raffleContract);
       
@@ -173,8 +181,7 @@ export class OraclePipeline {
         // External (single oracle) mode!
         console.log(`Processing single-oracle VRF randomness request for raffle=${raffleContract} requestId=${requestId}`);
         
-        const randomSeed = Date.now(); // In production, this should come from a secure source
-        const proof = this.vrfService.signRandomnessProof(raffleContract, requestId, BigInt(randomSeed));
+        const proof = this.vrfService.signRandomnessProof(raffleContract, requestId);
 
         // Submit transaction
         const txHash = await this.txSubmitter.submitProvideRandomness({
