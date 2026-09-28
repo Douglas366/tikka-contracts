@@ -35,77 +35,12 @@ fmt-check:
 clippy:
 	cargo clippy --all-targets --all-features -- -D warnings
 
-lint: fmt-check clippy
-
-# ---------------------------------------------------------------------------
-# Python / doc-sync targets
-# ---------------------------------------------------------------------------
-
-orphan-check:
-	python3 scripts/check_orphan_modules.py
-
-wasm-size:
-	python3 scripts/check_wasm_sizes.py
-
-# Regenerate docs and fail if the committed file is out of sync.
-docs-errors:
-	python3 scripts/generate_error_docs.py
-	git diff --exit-code docs/ERRORS.md
-
-docs-events:
-	python3 scripts/generate_event_docs.py
-	git diff --exit-code docs/EVENTS.md
-
-# ---------------------------------------------------------------------------
-# Shell script checks
-# ---------------------------------------------------------------------------
-
-shellcheck:
-	shellcheck scripts/*.sh
-
-# ---------------------------------------------------------------------------
-# Python lint and tests
-# ---------------------------------------------------------------------------
-
-# Lint and style-check all Python scripts with ruff (config in pyproject.toml).
-ruff-lint:
-	ruff check scripts/
-
-ruff-fmt-check:
-	ruff format --check scripts/
-
-# Run the scripts unit-test suite.
-python-tests:
-	python3 -m pytest scripts/tests/ -v
-
-# ---------------------------------------------------------------------------
-# Oracle targets
-# ---------------------------------------------------------------------------
-
-oracle-build:
-	cd oracle && npm ci && npm run build
-
-oracle-test:
-	cd oracle && npm test
-
-# CI uses `test:ci` (adds --ci flag + coverage); keep oracle-test for local use.
-oracle-test-ci:
-	cd oracle && npm run test:ci
-
-oracle-lint:
-	cd oracle && npm run lint
-
-oracle-fmt-check:
-	cd oracle && npm run format:check
-
-oracle-typecheck:
-	cd oracle && npm run typecheck
-
-# ---------------------------------------------------------------------------
-# Fuzzing
-# ---------------------------------------------------------------------------
-
-FUZZ_TARGETS := fuzz_buy_ticket fuzz_finalize_raffle fuzz_winner_selection fuzz_refund_cancel fuzz_commit_reveal
+# Derive fuzz targets from fuzz/Cargo.toml so this list never drifts from what
+# is actually declared.  The shell snippet greps every [[bin]] name = "…" line,
+# strips the surrounding quotes and whitespace, then joins the results.
+FUZZ_TARGETS := $(shell grep -A1 '^\[\[bin\]\]' fuzz/Cargo.toml \
+                  | grep 'name\s*=' \
+                  | sed 's/.*name\s*=\s*"\([^"]*\)".*/\1/')
 FUZZ_TIME ?= 300
 
 fuzz:

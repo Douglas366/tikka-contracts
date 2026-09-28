@@ -26,12 +26,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Keep this list in sync with the [[bin]] entries in fuzz/Cargo.toml.
+        # The Makefile derives the list automatically; CI enumerates it here
+        # so each target gets its own job, corpus cache, and crash artifact.
         target:
           - fuzz_buy_ticket
           - fuzz_finalize_raffle
           - fuzz_winner_selection
           - fuzz_refund_cancel
           - fuzz_commit_reveal
+          - fuzz_lifecycle
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
