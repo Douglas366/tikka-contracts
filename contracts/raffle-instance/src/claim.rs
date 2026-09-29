@@ -185,6 +185,7 @@ pub(crate) fn sweep_unclaimed(
 }
 
 pub(crate) fn refund_prize(env: Env) -> Result<(), Error> {
+    let _guard = Guard::new(&env)?;
     let mut raffle = read_raffle(&env)?;
     raffle.creator.require_auth();
 
@@ -205,6 +206,7 @@ pub(crate) fn refund_prize(env: Env) -> Result<(), Error> {
             &raffle.creator,
             &raffle.prize_amount,
         )
+        .map_err(|_| Error::TokenTransferFailed)?
         .map_err(|_| Error::TokenTransferFailed)?;
     PrizeRefunded {
         creator: raffle.creator.clone(),
@@ -242,8 +244,21 @@ pub(crate) fn refund_ticket(env: Env, ticket_id: u32) -> Result<i128, Error> {
         .set(&DataKey::TicketRefunded(ticket_id), &true);
 
     let token_client = token::Client::new(&env, &raffle.payment_token);
-    let _ = token_client.try_transfer(&env.current_contract_address(), &ticket.owner, &ticket.price_paid).map_err(|_| Error::TokenTransferFailed)?;
-    TicketRefunded { buyer: ticket.owner, ticket_number: ticket.ticket_number, amount: ticket.price_paid, timestamp: env.ledger().timestamp() }.publish(&env);
+    token_client
+        .try_transfer(
+            &env.current_contract_address(),
+            &ticket.owner,
+            &ticket.price_paid,
+        )
+        .map_err(|_| Error::TokenTransferFailed)?
+        .map_err(|_| Error::TokenTransferFailed)?;
+    TicketRefunded {
+        buyer: ticket.owner,
+        ticket_number: ticket.ticket_number,
+        amount: ticket.price_paid,
+        timestamp: env.ledger().timestamp(),
+    }
+    .publish(&env);
     Ok(ticket.price_paid)
 }
 
@@ -271,9 +286,10 @@ pub(crate) fn batch_refund_tickets(
         if !env.storage().persistent().has(&DataKey::TicketRefunded(ticket_id)) {
             env.storage().persistent().set(&DataKey::TicketRefunded(ticket_id), &true);
             
-            let _ = token_client.try_transfer(&env.current_contract_address(), &ticket.payer, &raffle.ticket_price).map_err(|_| Error::TokenTransferFailed)?;
+            token_client.try_transfer(&env.current_contract_address(), &ticket.owner, &ticket.price_paid).map_err(|_| Error::TokenTransferFailed)?.map_err(|_| Error::TokenTransferFailed)?;
             
-            TicketRefunded { buyer: ticket.owner.clone(), ticket_number: ticket.ticket_number, amount: raffle.ticket_price, timestamp: env.ledger().timestamp() }.publish(&env);
+            TicketRefunded { buyer: ticket.owner, ticket_number: ticket.ticket_number, amount: ticket.price_paid, timestamp: env.ledger().timestamp() }.publish(&env);
+
             
             total_refunded = total_refunded.checked_add(raffle.ticket_price).ok_or(Error::ArithmeticOverflow)?;
         }

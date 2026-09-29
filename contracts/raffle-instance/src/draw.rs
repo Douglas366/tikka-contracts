@@ -260,7 +260,8 @@ pub(crate) fn provide_randomness(
 
     let oracle = match &raffle.oracle_address {
         Some(addr) => {
-            addr.require_auth();
+            let addr_ref: &Address = addr;
+            addr_ref.require_auth();
             addr.clone()
         }
         None => return Err(Error::OracleNotSet),
@@ -282,6 +283,19 @@ pub(crate) fn provide_randomness(
     if derived_seed != random_seed {
         return Err(Error::InvalidParameters);
     }
+
+    // FIX(#985): bind the submitted public_key to the oracle's registered key.
+    // Without this check the ed25519_verify below only proves "this proof matches
+    // THIS key" — it never proved the key belongs to the trusted oracle.  An
+    // adversary (even the registered oracle) could supply a throwaway keypair
+    // whose proof SHA-256 hashes to a seed that makes their own ticket win.
+    if let Some(stored_key) = &raffle.oracle_public_key {
+        if public_key != *stored_key {
+            return Err(Error::OraclePublicKeyMismatch);
+        }
+    }
+    // If no key was stored (legacy raffle created before #985), we fall
+    // through to the signature check — better than silently accepting anything.
 
     let message = build_vrf_proof_message(&env, request_id);
     env.crypto().ed25519_verify(&public_key, &message, &proof);

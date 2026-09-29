@@ -48,6 +48,7 @@ fn test_oracle_fallback_with_ledger_delays() {
         prizes: soroban_sdk::vec![&env, 10000],
         randomness_source: RandomnessSource::External,
         oracle_address: Some(oracle.clone()),
+        oracle_public_key: None,
         protocol_fee_bp: 0,
         treasury_address: None,
         swap_router: None,
@@ -146,6 +147,7 @@ fn commit_reveal_entropy_is_mixed_from_all_tickets() {
             prizes: soroban_sdk::vec![&env, 6000, 3000, 1000],
             randomness_source: RandomnessSource::CommitReveal,
             oracle_address: None,
+            oracle_public_key: None,
             protocol_fee_bp: 0,
             treasury_address: None,
             swap_router: None,
@@ -242,6 +244,7 @@ fn commit_reveal_preserves_entropy_after_ticket_transfer() {
         prizes: soroban_sdk::vec![&env, 10000],
         randomness_source: RandomnessSource::CommitReveal,
         oracle_address: None,
+        oracle_public_key: None,
         protocol_fee_bp: 0,
         treasury_address: None,
         swap_router: None,
@@ -337,6 +340,7 @@ fn commit_reveal_with_zero_commits_falls_back_to_prng() {
         prizes: soroban_sdk::vec![&env, 7000, 3000],
         randomness_source: RandomnessSource::CommitReveal,
         oracle_address: None,
+        oracle_public_key: None,
         protocol_fee_bp: 0,
         treasury_address: None,
         swap_router: None,
@@ -416,6 +420,7 @@ fn drawing_lock_cleared_after_internal_finalize() {
         prizes: soroban_sdk::vec![&env, 10000],
         randomness_source: RandomnessSource::Internal,
         oracle_address: None,
+        oracle_public_key: None,
         protocol_fee_bp: 0,
         treasury_address: None,
         swap_router: None,
@@ -441,6 +446,117 @@ fn drawing_lock_cleared_after_internal_finalize() {
     client.finalize_raffle();
 
     assert_drawing_lock_cleared(&env, &contract_id);
+}
+
+#[test]
+fn drawing_lock_cleared_after_oracle_seed_delivered() {
+    use ed25519_dalek::{Signer, SigningKey};
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let factory = env.register(MockFactory, ());
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token_client = StellarAssetClient::new(&env, &payment_token);
+    token_client.mint(&creator, &1_000_000);
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[5u8; 32]);
+    let public_key = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+
+    let config = RaffleConfigBuilder::new(&env, payment_token)
+        .description(String::from_str(&env, "Lock oracle finalize"))
+        .max_tickets(1)
+        .max_tickets_per_tx(1)
+        .prize_amount(MIN_TICKET_PRICE * 2)
+        .randomness_source(RandomnessSource::External)
+        .oracle_address(Some(oracle))
+        .oracle_public_key(Some(public_key.clone()))
+        .metadata_hash(BytesN::from_array(&env, &[49; 32]))
+        .build()
+        .expect("valid oracle finalize config");
+
+    client.init(&factory, &admin, &creator, &config);
+    client.deposit_prize();
+    client.buy_tickets(&creator, &1);
+
+    // Sell-out already moved the raffle into Drawing with randomness requested.
+    assert_eq!(client.get_raffle().status, RaffleStatus::Drawing);
+
+    // Advance past the minimum delay before the oracle may deliver entropy.
+    env.ledger().set_sequence_number(env.ledger().sequence() + 20);
+
+    let request_id: u64 = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get(&DataKey::RandomnessRequestId)
+            .unwrap()
+    });
+
+    let message = env.as_contract(&contract_id, || {
+        crate::randomness::build_vrf_proof_message(&env, request_id)
+    });
+    let message_bytes: std::vec::Vec<u8> = message.iter().collect();
+    let proof = BytesN::from_array(&env, &signing_key.sign(&message_bytes).to_bytes());
+    let seed = crate::randomness::derive_random_seed_from_proof(&env, &proof);
+
+    client.provide_randomness(&seed, &public_key, &proof, &request_id);
+
+    assert_drawing_lock_cleared(&env, &contract_id);
+    assert_eq!(client.get_raffle().status, RaffleStatus::Finalized);
+}
+
+#[test]
+fn drawing_lock_cleared_after_fallback_finalize() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let factory = env.register(MockFactory, ());
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token_client = StellarAssetClient::new(&env, &payment_token);
+    token_client.mint(&creator, &1_000_000);
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
+    let config = RaffleConfigBuilder::new(&env, payment_token)
+        .description(String::from_str(&env, "Lock fallback finalize"))
+        .max_tickets(1)
+        .max_tickets_per_tx(1)
+        .prize_amount(MIN_TICKET_PRICE * 2)
+        .randomness_source(RandomnessSource::External)
+        .oracle_address(Some(oracle))
+        .metadata_hash(BytesN::from_array(&env, &[51; 32]))
+        .build()
+        .expect("valid fallback finalize config");
+
+    client.init(&factory, &admin, &creator, &config);
+    client.deposit_prize();
+    client.buy_tickets(&creator, &1);
+    assert_eq!(client.get_raffle().status, RaffleStatus::Drawing);
+
+    // Past the oracle timeout, the creator may force the fallback draw.
+    env.ledger().with_mut(|l| {
+        l.sequence_number += ORACLE_TIMEOUT_LEDGERS + 1;
+    });
+    client.trigger_randomness_fallback(&creator, &false);
+
+    assert_drawing_lock_cleared(&env, &contract_id);
+    assert_eq!(client.get_raffle().status, RaffleStatus::Finalized);
 }
 
 #[test]
@@ -472,6 +588,7 @@ fn drawing_lock_cleared_after_fallback_refund() {
         prizes: soroban_sdk::vec![&env, 10000],
         randomness_source: RandomnessSource::Internal,
         oracle_address: None,
+        oracle_public_key: None,
         protocol_fee_bp: 0,
         treasury_address: None,
         swap_router: None,
@@ -529,6 +646,7 @@ fn drawing_lock_cleared_after_cancel_in_drawing_state() {
         prizes: soroban_sdk::vec![&env, 10000],
         randomness_source: RandomnessSource::External,
         oracle_address: Some(oracle),
+        oracle_public_key: None,
         protocol_fee_bp: 0,
         treasury_address: None,
         swap_router: None,
@@ -592,6 +710,7 @@ fn unique_winners_limits_one_tier_per_address() {
         prizes,
         randomness_source: RandomnessSource::Internal,
         oracle_address: None,
+        oracle_public_key: None,
         protocol_fee_bp: 0,
         treasury_address: None,
         swap_router: None,
@@ -792,6 +911,7 @@ fn quorum_rejects_submission_before_drawing_lock() {
         prizes: soroban_sdk::vec![&env, 10000],
         randomness_source: RandomnessSource::Quorum(QuorumConfig { k: 2, oracles }),
         oracle_address: None,
+        oracle_public_key: None,
         protocol_fee_bp: 0,
         treasury_address: None,
         swap_router: None,
@@ -963,6 +1083,7 @@ fn test_unique_winners_single_owner_terminates() {
         prizes: soroban_sdk::vec![&env, 5000, 5000],
         randomness_source: RandomnessSource::Internal,
         oracle_address: None,
+        oracle_public_key: None,
         protocol_fee_bp: 0,
         treasury_address: None,
         swap_router: None,
@@ -1032,6 +1153,7 @@ fn test_unique_winners_n_distinct_owners_n_tiers() {
         prizes: soroban_sdk::vec![&env, 3333, 3333, 3334],
         randomness_source: RandomnessSource::Internal,
         oracle_address: None,
+        oracle_public_key: None,
         protocol_fee_bp: 0,
         treasury_address: None,
         swap_router: None,
@@ -1071,4 +1193,96 @@ fn test_unique_winners_n_distinct_owners_n_tiers() {
     assert_ne!(w0, w1);
     assert_ne!(w0, w2);
     assert_ne!(w1, w2);
+}
+
+// ── Acceptance-criterion test for #985 ───────────────────────────────────────
+//
+// Register oracle with key A, submit a proof signed by key B → must reject
+// with OraclePublicKeyMismatch.
+
+#[test]
+fn provide_randomness_rejects_mismatched_public_key() {
+    use crate::Error as ContractError;
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let factory = env.register(MockFactory, ());
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let payment_token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token_client = StellarAssetClient::new(&env, &payment_token);
+    token_client.mint(&creator, &100_000_000);
+
+    let contract_id = env.register(RaffleInstance, ());
+    let client = RaffleInstanceClient::new(&env, &contract_id);
+
+    // Key A is the registered oracle key.
+    let key_a = BytesN::from_array(&env, &[0xAAu8; 32]);
+    // Key B is a different key the attacker controls.
+    let key_b = BytesN::from_array(&env, &[0xBBu8; 32]);
+
+    let config = RaffleConfig {
+        description: String::from_str(&env, "985 test"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 5,
+        max_tickets_per_tx: 5,
+        min_tickets: 1,
+        allow_multiple: true,
+        max_tickets_per_address: 0,
+        ticket_price: 10_000,
+        payment_token: payment_token.clone(),
+        prize_amount: 10_000,
+        prizes: soroban_sdk::vec![&env, 10000u32],
+        randomness_source: RandomnessSource::External,
+        oracle_address: Some(oracle.clone()),
+        oracle_public_key: Some(key_a.clone()),
+        claim_expiry_seconds: None,
+        protocol_fee_bp: 0,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        unique_winners: false,
+        metadata_hash: BytesN::from_array(&env, &[1u8; 32]),
+        claim_lockup_seconds: None,
+        swap_deadline_seconds: None,
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+        category: None,
+        bundles: soroban_sdk::Vec::new(&env),
+        prize_token: None,
+        nft_contract: None,
+    };
+
+    client.init(&factory, &admin, &creator, &config);
+    client.deposit_prize();
+    client.buy_tickets(&creator, &5);
+    assert_eq!(client.get_raffle().status, RaffleStatus::Drawing);
+
+    // Advance past the minimum delay.
+    env.ledger().set_sequence_number(env.ledger().sequence() + 20);
+
+    let request_id: u64 = env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .get(&DataKey::RandomnessRequestId)
+            .unwrap()
+    });
+
+    // Any proof bytes — the binding check happens before ed25519_verify.
+    let proof_b = BytesN::from_array(&env, &[0xBBu8; 64]);
+    let seed_b = crate::randomness::derive_random_seed_from_proof(&env, &proof_b);
+
+    // Submitting key_b (not the registered key_a) must be rejected.
+    let result = client.try_provide_randomness(&seed_b, &key_b, &proof_b, &request_id);
+    assert_eq!(
+        result,
+        Err(Ok(ContractError::OraclePublicKeyMismatch)),
+        "expected OraclePublicKeyMismatch when public_key != registered oracle key"
+    );
 }

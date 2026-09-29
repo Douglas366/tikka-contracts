@@ -130,6 +130,7 @@ fn setup_raffle(
         prizes: build_prizes(env, prize_tiers),
         randomness_source: RandomnessSource::Internal,
         oracle_address: None,
+        oracle_public_key: None,
         protocol_fee_bp: 0,
         treasury_address: Some(Address::generate(env)),
         swap_router: None,
@@ -260,7 +261,7 @@ fn extend_ttl_max_tickets_within_baseline() {
     client.buy_tickets(&buyer, &1_000);
 
     let snap = measure(&env, || {
-        let _ = client.try_extend_ttl();
+        let _ = client.try_extend_ttl(&0, &1_000);
     });
     assert_within_tolerance("extend_ttl_max_tickets", snap, EXTEND_TTL_MAX_TICKETS);
 }

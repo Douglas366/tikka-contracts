@@ -217,6 +217,8 @@ pub struct OracleSeedDelivered {
     pub timestamp: u64,
 }
 
+
+
 /// Emitted when the raffle is finalized with all winners selected.
 ///
 /// ## Ticket-ID convention

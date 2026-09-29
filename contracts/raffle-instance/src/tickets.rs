@@ -42,12 +42,11 @@ use soroban_sdk::{
 use raffle_shared::{RandomnessSource, Ticket};
 
 use crate::events::{DrawTriggered, RandomnessRequested, TicketPurchased};
-use crate::helpers::calculate_buy_quote;
-use crate::helpers::{bump_raffle_ttl, Guard};
-use crate::{
-    request_randomness, require_not_paused, transition_to_drawing, CommitRevealEntry, DataKey,
-    Error, Raffle, RaffleStatus,
+use crate::helpers::{
+    bump_raffle_ttl, calculate_buy_quote, Guard, request_randomness, require_not_paused,
+    transition_to_drawing,
 };
+use crate::{CommitRevealEntry, DataKey, Error, Raffle, RaffleStatus};
 
 /// Shared pre-flight checks for [`buy_tickets`] (steps 1–5 of the purchase
 /// flow documented above).
@@ -223,6 +222,7 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
     let contract_address = env.current_contract_address();
     let _ = token_client
         .try_transfer(&buyer, &contract_address, &total_price)
+        .map_err(|_| Error::TokenTransferFailed)?
         .map_err(|_| Error::TokenTransferFailed)?;
 
     //  5. Transfer protocol fee to treasury
@@ -257,7 +257,7 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
     for i in 0..quantity {
         let ticket_id = snapshot_sold
             .checked_add(i)
-            .and_then(|v| v.checked_add(1))
+            .and_then(|v: u32| v.checked_add(1))
             .ok_or(Error::ArithmeticOverflow)?;
         let ticket = Ticket {
             id: ticket_id,
@@ -347,7 +347,7 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
         );
     }
 
-    // Opportunistically bump TTLs so a long-running raffle doesn't get archived.
+    //  10. Bump TTLs
     bump_raffle_ttl(&env, raffle.tickets_sold);
 
     Ok(raffle.tickets_sold)
@@ -455,14 +455,10 @@ pub(crate) fn buy_tickets_for(env: Env, buyer: Address, recipient: Address, quan
     }
 
     let timestamp = env.ledger().timestamp();
-    let total_price = raffle
-        .ticket_price
-        .checked_mul(quantity as i128)
-        .ok_or(Error::ArithmeticOverflow)?;
-    let protocol_fee = total_price
-        .checked_mul(raffle.protocol_fee_bp as i128)
-        .ok_or(Error::ArithmeticOverflow)?
-        / 10000;
+    let quote = calculate_buy_quote(&raffle, quantity)?;
+    let total_price = quote.net_to_pay;
+    let protocol_fee = quote.fee;
+    let effective_price = quote.effective_ticket_price;
 
     //  3. Verify no concurrent modification
     let persisted = crate::read_raffle(&env)?;
@@ -488,6 +484,7 @@ pub(crate) fn buy_tickets_for(env: Env, buyer: Address, recipient: Address, quan
     let contract_address = env.current_contract_address();
     let _ = token_client
         .try_transfer(&buyer, &contract_address, &total_price)
+        .map_err(|_| Error::TokenTransferFailed)?
         .map_err(|_| Error::TokenTransferFailed)?;
 
     //  5. Transfer protocol fee to treasury
@@ -522,7 +519,7 @@ pub(crate) fn buy_tickets_for(env: Env, buyer: Address, recipient: Address, quan
     for i in 0..quantity {
         let ticket_id = snapshot_sold
             .checked_add(i)
-            .and_then(|v| v.checked_add(1))
+            .and_then(|v: u32| v.checked_add(1))
             .ok_or(Error::ArithmeticOverflow)?;
         let ticket = Ticket {
             id: ticket_id,
@@ -530,7 +527,7 @@ pub(crate) fn buy_tickets_for(env: Env, buyer: Address, recipient: Address, quan
             purchase_time: timestamp,
             ticket_number: ticket_id,
             payer: buyer.clone(),
-            price_paid: raffle.ticket_price,
+            price_paid: effective_price,
         };
         env.storage()
             .persistent()

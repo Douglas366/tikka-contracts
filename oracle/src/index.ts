@@ -1,5 +1,7 @@
 import { Alerter } from './alert/alerter';
 import { loadAndValidateConfig } from './config';
+import { startHealthServer } from './health/health.server';
+import { logger } from './logging/logger';
 import { createPipeline } from './pipeline';
 
 /**
@@ -14,7 +16,7 @@ async function main(): Promise<void> {
     rateLimitMs: config.alertRateLimitMs,
   });
 
-  startHealthServer();
+  const healthServer = startHealthServer({ port: config.healthPort });
 
   if (!alerter.enabled) {
     logger.warn('ALERT_WEBHOOK_URL is not set; operational alerts are disabled.');
@@ -27,27 +29,28 @@ async function main(): Promise<void> {
     });
   }
 
-  // Create and start the oracle pipeline
-  const pipeline = createPipeline(config, {
-    alerter,
-  });
+  const pipeline = createPipeline(config, { alerter });
 
-  // Register signal handlers
+  const shutdown = (): void => {
+    void pipeline.shutdown().finally(() => {
+      healthServer.close();
+    });
+  };
+
   process.on('SIGINT', () => {
-    console.log('SIGINT received. Initiating graceful shutdown...');
-    void pipeline.shutdown();
+    logger.info('SIGINT received. Initiating graceful shutdown...');
+    shutdown();
   });
 
   process.on('SIGTERM', () => {
-    console.log('SIGTERM received. Initiating graceful shutdown...');
-    void pipeline.shutdown();
+    logger.info('SIGTERM received. Initiating graceful shutdown...');
+    shutdown();
   });
 
-  // Start listening for events from the factory contract
   await pipeline.start([config.factoryContractId]);
 }
 
-main().catch((error) => {
+main().catch((error: unknown) => {
   logger.error(`Oracle service failed to start: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
 });
