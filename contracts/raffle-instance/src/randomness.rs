@@ -26,236 +26,12 @@
 //! raffle contract address **and** the request ID so that a valid proof for
 //! one raffle cannot be replayed against a different raffle or request.
 //!
-//! See [`docs/RANDOMNESS.md`](../../../docs/RANDOMNESS.md) for a
+//! See [`docs/RANDOMNESS.md`](../../../../docs/RANDOMNESS.md) for a
 //! higher-level comparison of all randomness modes, and
-//! [`docs/COMMIT_REVEAL.md`](../../../docs/COMMIT_REVEAL.md) for the
+//! [`docs/COMMIT_REVEAL.md`](../../../../docs/COMMIT_REVEAL.md) for the
 //! commit-reveal protocol specification.
 
 use soroban_sdk::{xdr::ToXdr, Address, Bytes, BytesN, Env, Vec};
-
-// ============================================================================
-// build_internal_seed
-// ============================================================================
-//
-// ⚠️  LOW-STAKES RAFFLES ONLY
-//
-// This seed is deterministic and visible on-chain.  Any participant who knows
-// the ledger state at the time `finalize_raffle` is called can reproduce the
-// exact output.  Miners / validators can also influence the ledger timestamp and
-// sequence to bias the result.
-//
-// For high-stakes or high-value raffles, use `RandomnessSource::External` so
-// that a VRF oracle provides a verifiably-unbiased seed that cannot be
-// predicted or manipulated before `provide_randomness` is called.
-//
-// Base entropy sources mixed into the seed:
-//   1. `ledger_timestamp`  – wall-clock time in seconds
-//   2. `ledger_sequence`   – monotonically-increasing ledger counter
-//   3. `network_id`        – SHA-256 of the network passphrase (32 bytes),
-//                            ensuring seeds are network-partitioned (mainnet ≠
-//                            testnet ≠ futurenet)
-//   4. `raffle_id`         – the raffle contract address in XDR encoding,
-//                            making every raffle's draw independent even when
-//                            finalized in the same ledger
-//
-// Note: `env.prng().seed()` is never called in the contract runtime.
-// The four base inputs are packed together and passed through `env.crypto().sha256`
-// to produce a 32-byte digest used by `PrngWinnerSelection::seed_fingerprint`.
-// The active on-chain finalization path for `Internal` raffles derives a `u64`
-// seed in `helpers::build_internal_seed_u64` and passes it to `OracleSeedWinnerSelection`.
-
-/// Build a 32-byte base entropy digest by hashing four ledger and contract sources
-/// together: `(ledger_timestamp, ledger_sequence, network_id, raffle_id)`.
-///
-/// The four base sources are (in order):
-///
-/// 1. `ledger_timestamp` — wall-clock time in seconds; changes every ~5 s.
-/// 2. `ledger_sequence` — monotonically-increasing ledger counter.
-/// 3. `network_id` — 32-byte SHA-256 of the network passphrase, ensuring
-///    that seeds on mainnet, testnet, and futurenet are all different even
-///    for an identical raffle and ledger state.
-/// 4. `raffle_id` (XDR-encoded) — the current contract's address, making
-///    concurrent raffles finalised in the same ledger produce distinct seeds.
-///
-/// The base sources are XDR-serialised into a single byte buffer before being
-/// passed to `env.crypto().sha256`. XDR encoding is unambiguous and
-/// length-delimited so there are no field-boundary collision attacks.
-///
-/// Note on contract execution: `env.prng().seed()` is **not** called by the contract during
-/// finalization. The on-chain finalization path for `RandomnessSource::Internal` draws derives
-/// a `u64` seed in `helpers::build_internal_seed_u64` and passes it to [`OracleSeedWinnerSelection`].
-/// `build_internal_seed` and [`PrngWinnerSelection::seed_bytes`] serve as auxiliary 256-bit
-/// entropy helpers (used for seed fingerprinting in [`PrngWinnerSelection::seed_fingerprint`]).
-///
-/// # Returns
-///
-/// A [`BytesN<32>`] SHA-256 hash of the XDR-serialized tuple.
-///
-/// # Panics
-///
-/// Panics if `env.crypto().sha256` returns the all-zero hash (which would
-/// indicate a crypto subsystem failure) to prevent silently falling back to a
-/// trivially predictable seed.
-///
-/// # Security note
-///
-/// **For low-stakes raffles only.** The seed is deterministic given ledger
-/// state, so any observer can reproduce the winner selection.  Validators can
-/// also marginally bias `ledger_timestamp` and `ledger_sequence`.  Use
-/// [`RandomnessSource::External`] for high-value draws.
-///
-/// See also: module-level documentation and
-/// [`docs/RANDOMNESS.md`](../../../docs/RANDOMNESS.md).
-#[allow(dead_code)]
-pub fn build_internal_seed(env: &Env, raffle_id: &Address) -> BytesN<32> {
-    let timestamp = env.ledger().timestamp();
-    let sequence = env.ledger().sequence();
-    let network_id: BytesN<32> = env.ledger().network_id();
-
-    // Pack all sources into a single byte buffer, then SHA-256 hash it.
-    // Using XDR serialisation guarantees an unambiguous, length-delimited
-    // encoding so there are no collisions between differently-typed fields.
-    let raw: Bytes = (timestamp, sequence, network_id, raffle_id.clone()).to_xdr(env);
-    hash_bytes32(env, &raw)
-}
-
-/// Hash `input` with SHA-256 and verify the result is non-zero.
-///
-/// A zero hash would be indistinguishable from a crypto subsystem failure, so
-/// this function panics rather than returning silently — a zeroed seed would
-/// make winner selection trivially reproducible and insecure.
-#[allow(dead_code)]
-fn hash_bytes32(env: &Env, input: &Bytes) -> BytesN<32> {
-    let hash: BytesN<32> = env.crypto().sha256(input).into();
-    if hash.to_array() == [0u8; 32] {
-        panic!("crypto.sha256() failed: invalid hash output");
-    }
-    hash
-}
-
-/// Common interface for winner-index selection algorithms.
-///
-/// Implemented by [`OracleSeedWinnerSelection`] (the canonical algorithm used on-chain
-/// by [`do_finalize_with_seed`](crate::helpers::do_finalize_with_seed)) and
-/// [`PrngWinnerSelection`] (an alternative PRNG strategy).
-///
-/// Note: On-chain finalization does not perform runtime strategy dispatch;
-/// `do_finalize_with_seed` statically instantiates [`OracleSeedWinnerSelection`].
-#[allow(dead_code)]
-pub trait WinnerSelectionStrategy {
-    /// Return `winner_count` distinct zero-based ticket indices chosen
-    /// uniformly at random from `[0, total_tickets)`.
-    ///
-    /// If `winner_count > total_tickets`, at most `total_tickets` indices are
-    /// returned (no duplicates are possible beyond that cap).  An empty `Vec`
-    /// is returned when either argument is zero.
-    fn select_winner_indices(&self, env: &Env, total_tickets: u32, winner_count: u32) -> Vec<u32>;
-}
-
-/// On-chain PRNG-based winner selection using `env.prng()`.
-///
-/// Note: The active on-chain finalization path does not invoke `PrngWinnerSelection`
-/// or `env.prng().seed()`. Instead, [`RandomnessSource::Internal`](crate::RandomnessSource::Internal)
-/// and fallback draws derive a `u64` seed via `helpers::build_internal_seed_u64` and execute
-/// [`OracleSeedWinnerSelection`]. `PrngWinnerSelection` is retained as an alternative
-/// strategy implementation.
-///
-/// **For low-stakes raffles only** — see [`build_internal_seed`] and the
-/// module documentation for the full security caveat.
-#[allow(dead_code)]
-pub struct PrngWinnerSelection {
-    pub raffle_id: Address,
-    /// Number of tickets sold at draw time, mixed into the seed so that
-    /// identical raffle setups with different participation produce different
-    /// outcomes.
-    pub tickets_sold: u32,
-}
-
-#[allow(dead_code)]
-impl PrngWinnerSelection {
-    /// Create a new `PrngWinnerSelection` for the given raffle and ticket count.
-    pub fn new(raffle_id: Address, tickets_sold: u32) -> Self {
-        Self { raffle_id, tickets_sold }
-    }
-
-    /// Return a compact `u64` fingerprint of the draw seed.
-    ///
-    /// The fingerprint is derived from the first 8 bytes of a second SHA-256
-    /// hash over the base seed, giving the same domain separation as the full
-    /// seed while fitting in a `u64` for compact on-chain storage in
-    /// [`FairnessMetadata`](crate::FairnessMetadata).
-    ///
-    /// The fingerprint changes whenever `raffle_id`, `tickets_sold`, or any
-    /// ledger field changes, so it can be used to spot-check draws off-chain.
-    pub fn seed_fingerprint(&self, env: &Env) -> u64 {
-        let hashed = hash_bytes32(env, &self.seed_bytes(env));
-        let arr = hashed.to_array();
-        u64::from_be_bytes([
-            arr[0], arr[1], arr[2], arr[3], arr[4], arr[5], arr[6], arr[7],
-        ])
-    }
-
-    /// Build the 32-byte entropy buffer used by [`seed_fingerprint`](Self::seed_fingerprint).
-    ///
-    /// Extends [`build_internal_seed`] by XDR-packing `base_seed ‖
-    /// tickets_sold` and re-hashing so that the ticket-count entropy is
-    /// included without truncating any of the base sources.
-    ///
-    /// Note: This is an internal helper for computing seed fingerprints and is not
-    /// passed to `env.prng().seed()`.
-    fn seed_bytes(&self, env: &Env) -> Bytes {
-        let base: BytesN<32> = build_internal_seed(env, &self.raffle_id);
-        // XDR-pack the base seed + tickets_sold and re-hash to include the
-        // extra entropy source without truncating the network_id contribution.
-        let combined: Bytes = (base, self.tickets_sold).to_xdr(env);
-        hash_bytes32(env, &combined).into()
-    }
-}
-
-impl WinnerSelectionStrategy for PrngWinnerSelection {
-    fn select_winner_indices(&self, env: &Env, total_tickets: u32, winner_count: u32) -> Vec<u32> {
-        let mut indices = Vec::new(env);
-        if total_tickets == 0 || winner_count == 0 {
-            return indices;
-        }
-
-        let effective_count = winner_count.min(total_tickets) as usize;
-
-        // Draw up to total_tickets times, collecting unique indices until we have
-        // effective_count winners.  This is bounded by total_tickets iterations
-        // (no unbounded loop), and guarantees exactly effective_count distinct indices.
-        //
-        // FIX(#1006): the previous code kept a `drawn_count: usize = 0` that was
-        // never incremented, so the `drawn_count >= effective_count` break never
-        // fired and the loop always collected every unique index up to total_tickets.
-        // We now break directly on `indices.len() >= effective_count` instead.
-        let mut drawn: Vec<u32> = Vec::new(env);
-        for _ in 0..total_tickets {
-            // Draw a random index from [0, total_tickets)
-            #[allow(deprecated)]
-            let idx = env.prng().u64_in_range(0..(total_tickets as u64)) as u32;
-
-            // Check if already drawn (linear scan - O(k) per check, k <= MAX_PRIZES <= 100)
-            let mut duplicate = false;
-            for d in drawn.iter() {
-                if d == idx {
-                    duplicate = true;
-                    break;
-                }
-            }
-
-            if !duplicate {
-                drawn.push_back(idx);
-                indices.push_back(idx);
-                if indices.len() as usize >= effective_count {
-                    break;
-                }
-            }
-        }
-
-        indices
-    }
-}
 
 /// Build the Ed25519 message that binds a VRF proof to a specific raffle and
 /// request.
@@ -284,7 +60,7 @@ impl WinnerSelectionStrategy for PrngWinnerSelection {
 /// A [`Bytes`] value representing the XDR-serialized `(contract_address, request_id)` tuple,
 /// passed to `env.crypto().ed25519_verify`.
 ///
-/// See also: [`docs/RANDOMNESS.md`](../../../docs/RANDOMNESS.md) — External
+/// See also: [`docs/RANDOMNESS.md`](../../../../docs/RANDOMNESS.md) — External
 /// / VRF mode.
 pub fn build_vrf_proof_message(env: &Env, request_id: u64) -> Bytes {
     (env.current_contract_address(), request_id).to_xdr(env)
@@ -970,13 +746,5 @@ mod tests {
 
         assert_eq!(seed, expected_seed);
         assert_ne!(seed, 0);
-    }
-
-    #[test]
-    fn build_internal_seed_produces_non_zero_seed() {
-        let env = Env::default();
-        let raffle_id = Address::generate(&env);
-        let seed = build_internal_seed(&env, &raffle_id);
-        assert_ne!(seed.to_array(), [0u8; 32]);
     }
 }

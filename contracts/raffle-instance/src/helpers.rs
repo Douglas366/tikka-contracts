@@ -424,6 +424,7 @@ pub(crate) fn build_internal_seed_u64(env: &Env) -> u64 {
     let xdr = (
         env.ledger().timestamp(),
         env.ledger().sequence(),
+        env.ledger().network_id(),
         env.current_contract_address(),
     )
         .to_xdr(env);
@@ -488,7 +489,7 @@ pub(crate) fn calculate_tier_prize(raffle: &Raffle, tier_index: u32) -> Result<i
 /// - [`events::WinnerDrawn`] — emitted once per winner.
 /// - [`events::RaffleFinalized`] — emitted after all winners are resolved.
 ///
-/// See also: [`docs/EVENTS.md`](../../../docs/EVENTS.md) — `WinnerDrawn`,
+/// See also: [`docs/EVENTS.md`](../../../../docs/EVENTS.md) — `WinnerDrawn`,
 /// `RaffleFinalized`.
 pub(crate) fn do_finalize_with_seed(
     env: &Env,

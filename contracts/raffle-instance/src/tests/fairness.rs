@@ -152,49 +152,30 @@ fn snapshot(env: &Env) -> (u64, u64) {
 
 #[cfg(test)]
 mod winner_count_regression {
-    use crate::randomness::{OracleSeedWinnerSelection, PrngWinnerSelection, WinnerSelectionStrategy};
-    use soroban_sdk::{Address, Env};
+    use crate::helpers::build_internal_seed_u64;
+    use crate::randomness::OracleSeedWinnerSelection;
+    use soroban_sdk::{testutils::Ledger, Env};
 
-    /// k = 1: a single-winner draw must return exactly one index.
     #[test]
-    fn prng_returns_exactly_one_winner_when_k_is_one() {
+    fn internal_draws_differ_across_networks() {
         let env = Env::default();
-        let contract = env
-            .register_stellar_asset_contract_v2(Address::generate(&env))
-            .address();
-        let raffle_id = Address::generate(&env);
-        let selector = PrngWinnerSelection::new(raffle_id, 50);
-        let indices = env.as_contract(&contract, || {
-            selector.select_winner_indices(&env, 50, 1)
-        });
-        assert_eq!(
-            indices.len(),
-            1,
-            "k=1: expected exactly 1 winner, got {}",
-            indices.len()
-        );
-    }
+        let contract_id = env.register(crate::Contract, ());
+        env.ledger().set_timestamp(1_000);
+        env.ledger().set_sequence_number(100);
+        env.ledger().set_network_id([1u8; 32]);
 
-    /// k = prizes.len(): a multi-tier draw must return exactly prizes.len() indices.
-    #[test]
-    fn prng_returns_exactly_prize_count_winners() {
-        let env = Env::default();
-        let contract = env
-            .register_stellar_asset_contract_v2(Address::generate(&env))
-            .address();
-        let raffle_id = Address::generate(&env);
-        let prizes_len: u32 = 3;
-        let selector = PrngWinnerSelection::new(raffle_id, 500);
-        let indices = env.as_contract(&contract, || {
-            selector.select_winner_indices(&env, 500, prizes_len)
+        let first_draw = env.as_contract(&contract_id, || {
+            let seed = build_internal_seed_u64(&env);
+            OracleSeedWinnerSelection::new(seed).select_winner_indices_pure(100, 100)
         });
-        assert_eq!(
-            indices.len(),
-            prizes_len,
-            "k=prizes_len: expected {} winners, got {}",
-            prizes_len,
-            indices.len()
-        );
+
+        env.ledger().set_network_id([2u8; 32]);
+        let second_draw = env.as_contract(&contract_id, || {
+            let seed = build_internal_seed_u64(&env);
+            OracleSeedWinnerSelection::new(seed).select_winner_indices_pure(100, 100)
+        });
+
+        assert_ne!(first_draw, second_draw);
     }
 
     /// k > n: when more winners are requested than tickets exist, return at
