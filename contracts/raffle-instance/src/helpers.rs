@@ -319,24 +319,7 @@ pub(crate) fn require_not_paused(env: &Env) -> Result<(), Error> {
 /// Blocks ticket purchases (and other guarded ops) while the protocol-wide
 /// **global pause** is engaged.
 ///
-/// This intentionally consults the factory's `is_global_paused` flag — the one
-/// toggled by `emergency_pause_all` / `emergency_unpause_all`. That is the
-/// single switch that halts every deployed instance at once, which is why an
-/// `emergency_pause_all` call stops ticket purchases here even though this
-/// contract was already deployed.
-///
-/// It does **not** consult the factory's `DataKey::Paused` (`pause_factory`)
-/// or `DataKey::CreationPaused` (`set_creation_paused`) flags: `pause_factory`
-/// only stops new activity at the factory level and `set_creation_paused` only
-/// blocks `create_raffle`. Neither reaches existing instances by design.
-///
-/// Precedence (highest to lowest, factory-side):
-///   1. global pause  (`emergency_pause_all`)   → blocks everything, all instances
-///   2. factory pause  (`pause_factory`)         → blocks factory-level ops only
-///   3. creation pause (`set_creation_paused`)   → blocks `create_raffle` only
-///
-/// See `contracts/raffle-factory/src/pause.rs` for the authoritative table and
-/// `docs/ARCHITECTURE.md` / `oracle/RUNBOOK.md` for the incident-response call.
+/// See [`docs/ARCHITECTURE.md`](../../../docs/ARCHITECTURE.md) for the authoritative pause-flag precedence table and incident response.
 pub(crate) fn require_global_not_paused(env: &Env) -> Result<(), Error> {
     let factory: Address = env
         .storage()
@@ -479,7 +462,7 @@ pub(crate) fn calculate_tier_prize(raffle: &Raffle, tier_index: u32) -> Result<i
 /// - [`events::WinnerDrawn`] — emitted once per winner.
 /// - [`events::RaffleFinalized`] — emitted after all winners are resolved.
 ///
-/// See also: [`docs/EVENTS.md`](../../../../docs/EVENTS.md) — `WinnerDrawn`,
+/// See also: [`docs/EVENTS.md`](../../../docs/EVENTS.md) — `WinnerDrawn`,
 /// `RaffleFinalized`.
 pub(crate) fn do_finalize_with_seed(
     env: &Env,

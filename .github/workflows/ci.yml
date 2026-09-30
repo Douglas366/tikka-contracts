@@ -67,6 +67,8 @@ jobs:
     - name: Check for Orphaned Modules
       run: make orphan-check
 
+    - name: Check Doc Links
+      run: python3 scripts/check_doc_links.py
     - name: Check Error Code Catalog
       run: python3 scripts/check_error_codes.py
 

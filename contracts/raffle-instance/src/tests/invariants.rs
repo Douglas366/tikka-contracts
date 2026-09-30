@@ -111,7 +111,7 @@ fn final_tier_absorbs_maximum_rounding_dust() {
 /// still owes to ticket holders (`per_ticket_refund` for each not-yet-refunded
 /// ticket id) plus any un-refunded prize escrowed on behalf of the creator.
 ///
-/// Called by the refund-path lifecycle tests (`tests/claim.rs`) after every
+/// Called by the refund-path lifecycle tests (`claim.rs`) after every
 /// refund/prize-recovery operation, and asserted inline by the fuzz harness
 /// (`fuzz/fuzz_targets/real_harness.rs::refund_cancel`).
 pub fn assert_refund_solvency(
