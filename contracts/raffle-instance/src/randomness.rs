@@ -26,9 +26,9 @@
 //! raffle contract address **and** the request ID so that a valid proof for
 //! one raffle cannot be replayed against a different raffle or request.
 //!
-//! See [`docs/RANDOMNESS.md`](../../../../docs/RANDOMNESS.md) for a
+//! See [`docs/RANDOMNESS.md`](../../../docs/RANDOMNESS.md) for a
 //! higher-level comparison of all randomness modes, and
-//! [`docs/COMMIT_REVEAL.md`](../../../../docs/COMMIT_REVEAL.md) for the
+//! [`docs/COMMIT_REVEAL.md`](../../../docs/COMMIT_REVEAL.md) for the
 //! commit-reveal protocol specification.
 
 use soroban_sdk::{xdr::ToXdr, Address, Bytes, BytesN, Env, Vec};
@@ -57,14 +57,15 @@ use soroban_sdk::{xdr::ToXdr, Address, Bytes, BytesN, Env, Vec};
 //   4. `raffle_id`         – the raffle contract address in XDR encoding,
 //                            making every raffle's draw independent even when
 //                            finalized in the same ledger
-// `PrngWinnerSelection::seed_bytes` adds `tickets_sold` in a second hash.
 //
-// The four base inputs are packed together and passed through
-// `env.crypto().sha256`; `PrngWinnerSelection` then incorporates the ticket
-// count in a second hash before calling `env.prng().seed()`.
+// Note: `env.prng().seed()` is never called in the contract runtime.
+// The four base inputs are packed together and passed through `env.crypto().sha256`
+// to produce a 32-byte digest used by `PrngWinnerSelection::seed_fingerprint`.
+// The active on-chain finalization path for `Internal` raffles derives a `u64`
+// seed in `helpers::build_internal_seed_u64` and passes it to `OracleSeedWinnerSelection`.
 
-/// Build a 32-byte base internal PRNG seed by hashing four entropy sources
-/// together. The ticket count is added by [`PrngWinnerSelection::seed_bytes`].
+/// Build a 32-byte base entropy digest by hashing four ledger and contract sources
+/// together: `(ledger_timestamp, ledger_sequence, network_id, raffle_id)`.
 ///
 /// The four base sources are (in order):
 ///
@@ -75,16 +76,20 @@ use soroban_sdk::{xdr::ToXdr, Address, Bytes, BytesN, Env, Vec};
 ///    for an identical raffle and ledger state.
 /// 4. `raffle_id` (XDR-encoded) — the current contract's address, making
 ///    concurrent raffles finalised in the same ledger produce distinct seeds.
-/// `PrngWinnerSelection::seed_bytes` then adds `tickets_sold` as an additional
-/// XDR-packed field in a second hash.
 ///
 /// The base sources are XDR-serialised into a single byte buffer before being
 /// passed to `env.crypto().sha256`. XDR encoding is unambiguous and
 /// length-delimited so there are no field-boundary collision attacks.
 ///
+/// Note on contract execution: `env.prng().seed()` is **not** called by the contract during
+/// finalization. The on-chain finalization path for `RandomnessSource::Internal` draws derives
+/// a `u64` seed in `helpers::build_internal_seed_u64` and passes it to [`OracleSeedWinnerSelection`].
+/// `build_internal_seed` and [`PrngWinnerSelection::seed_bytes`] serve as auxiliary 256-bit
+/// entropy helpers (used for seed fingerprinting in [`PrngWinnerSelection::seed_fingerprint`]).
+///
 /// # Returns
 ///
-/// A [`BytesN<32>`] suitable for passing directly to `env.prng().seed()`.
+/// A [`BytesN<32>`] SHA-256 hash of the XDR-serialized tuple.
 ///
 /// # Panics
 ///
@@ -100,7 +105,7 @@ use soroban_sdk::{xdr::ToXdr, Address, Bytes, BytesN, Env, Vec};
 /// [`RandomnessSource::External`] for high-value draws.
 ///
 /// See also: module-level documentation and
-/// [`docs/RANDOMNESS.md`](../../../../docs/RANDOMNESS.md).
+/// [`docs/RANDOMNESS.md`](../../../docs/RANDOMNESS.md).
 #[allow(dead_code)]
 pub fn build_internal_seed(env: &Env, raffle_id: &Address) -> BytesN<32> {
     let timestamp = env.ledger().timestamp();
@@ -130,11 +135,12 @@ fn hash_bytes32(env: &Env, input: &Bytes) -> BytesN<32> {
 
 /// Common interface for winner-index selection algorithms.
 ///
-/// Implemented by both [`PrngWinnerSelection`] (on-chain PRNG) and
-/// [`OracleSeedWinnerSelection`] (external VRF seed), so that
-/// [`do_finalize_with_seed`](crate::helpers::do_finalize_with_seed) can
-/// select winners through a single call-site regardless of the randomness
-/// source.
+/// Implemented by [`OracleSeedWinnerSelection`] (the canonical algorithm used on-chain
+/// by [`do_finalize_with_seed`](crate::helpers::do_finalize_with_seed)) and
+/// [`PrngWinnerSelection`] (an alternative PRNG strategy).
+///
+/// Note: On-chain finalization does not perform runtime strategy dispatch;
+/// `do_finalize_with_seed` statically instantiates [`OracleSeedWinnerSelection`].
 #[allow(dead_code)]
 pub trait WinnerSelectionStrategy {
     /// Return `winner_count` distinct zero-based ticket indices chosen
@@ -146,12 +152,13 @@ pub trait WinnerSelectionStrategy {
     fn select_winner_indices(&self, env: &Env, total_tickets: u32, winner_count: u32) -> Vec<u32>;
 }
 
-/// On-chain PRNG-based winner selection using a multi-source seed.
+/// On-chain PRNG-based winner selection using `env.prng()`.
 ///
-/// Used for [`RandomnessSource::Internal`] raffles and as the fallback when
-/// the commit-reveal path has no commits.  The same inputs always produce the
-/// same winners, which allows off-chain auditors to verify the draw by
-/// replaying the seed construction against the known ledger state.
+/// Note: The active on-chain finalization path does not invoke `PrngWinnerSelection`
+/// or `env.prng().seed()`. Instead, [`RandomnessSource::Internal`](crate::RandomnessSource::Internal)
+/// and fallback draws derive a `u64` seed via `helpers::build_internal_seed_u64` and execute
+/// [`OracleSeedWinnerSelection`]. `PrngWinnerSelection` is retained as an alternative
+/// strategy implementation.
 ///
 /// **For low-stakes raffles only** — see [`build_internal_seed`] and the
 /// module documentation for the full security caveat.
@@ -188,11 +195,14 @@ impl PrngWinnerSelection {
         ])
     }
 
-    /// Build the raw 32-byte seed `Bytes` that is passed to `env.prng().seed()`.
+    /// Build the 32-byte entropy buffer used by [`seed_fingerprint`](Self::seed_fingerprint).
     ///
     /// Extends [`build_internal_seed`] by XDR-packing `base_seed ‖
     /// tickets_sold` and re-hashing so that the ticket-count entropy is
-    /// included without truncating any of the four base sources.
+    /// included without truncating any of the base sources.
+    ///
+    /// Note: This is an internal helper for computing seed fingerprints and is not
+    /// passed to `env.prng().seed()`.
     fn seed_bytes(&self, env: &Env) -> Bytes {
         let base: BytesN<32> = build_internal_seed(env, &self.raffle_id);
         // XDR-pack the base seed + tickets_sold and re-hash to include the
@@ -250,31 +260,31 @@ impl WinnerSelectionStrategy for PrngWinnerSelection {
 /// Build the Ed25519 message that binds a VRF proof to a specific raffle and
 /// request.
 ///
-/// The oracle must sign exactly this byte sequence when calling
-/// [`provide_randomness`](crate::draw::provide_randomness).  The message
-/// contains:
+/// The oracle must sign exactly this byte sequence when generating the VRF proof
+/// submitted to [`provide_randomness`](crate::draw::provide_randomness). The message
+/// contains two XDR-serialized fields:
 ///
-/// - The current contract address (`env.current_contract_address()`) — binds
-///   the proof to **this** raffle; a proof generated for raffle A cannot be
-///   replayed against raffle B.
-/// - `request_id` — binds the proof to the specific randomness request; a
-///   stale or recycled proof from an earlier draw cannot be accepted.
-/// - `random_seed` — the oracle's VRF output being delivered.
+/// 1. The current contract address (`env.current_contract_address()`) — binds
+///    the proof to **this** raffle; a proof generated for raffle A cannot be
+///    replayed against raffle B.
+/// 2. `request_id` — binds the proof to the specific randomness request; a
+///    stale or recycled proof from an earlier draw cannot be accepted.
 ///
-/// All three fields are XDR-serialised together so the encoding is
-/// unambiguous and length-delimited.
+/// The random seed is not part of this signed message; instead, it is derived
+/// deterministically on-chain from the verified proof using
+/// [`derive_random_seed_from_proof`].
 ///
 /// # Parameters
 ///
 /// - `request_id` — The unique request ID stored in
 ///   [`DataKey::RandomnessRequestId`](crate::DataKey::RandomnessRequestId).
-/// - `random_seed` — The VRF output (random seed) being delivered.
 ///
 /// # Returns
 ///
-/// A [`Bytes`] value that should be passed to `env.crypto().ed25519_verify`.
+/// A [`Bytes`] value representing the XDR-serialized `(contract_address, request_id)` tuple,
+/// passed to `env.crypto().ed25519_verify`.
 ///
-/// See also: [`docs/RANDOMNESS.md`](../../../../docs/RANDOMNESS.md) — External
+/// See also: [`docs/RANDOMNESS.md`](../../../docs/RANDOMNESS.md) — External
 /// / VRF mode.
 pub fn build_vrf_proof_message(env: &Env, request_id: u64) -> Bytes {
     (env.current_contract_address(), request_id).to_xdr(env)
@@ -771,5 +781,45 @@ mod tests {
         });
         assert_eq!(indices.len(), 1);
         assert!(indices.get(0).unwrap() < 100);
+    }
+
+    #[test]
+    fn vrf_proof_message_packs_contract_address_and_request_id() {
+        let env = Env::default();
+        let contract = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
+        let request_id = 12345u64;
+
+        let msg = env.as_contract(&contract, || {
+            build_vrf_proof_message(&env, request_id)
+        });
+
+        // The message must equal the XDR encoding of (contract_address, request_id)
+        let expected: Bytes = (contract, request_id).to_xdr(&env);
+        assert_eq!(msg, expected);
+    }
+
+    #[test]
+    fn derive_random_seed_from_proof_matches_sha256_prefix() {
+        let env = Env::default();
+        let proof = BytesN::from_array(&env, &[0x42u8; 64]);
+        let seed = derive_random_seed_from_proof(&env, &proof);
+
+        let proof_bytes: Bytes = Bytes::from_array(&env, &proof.to_array());
+        let hash: BytesN<32> = env.crypto().sha256(&proof_bytes).into();
+        let arr = hash.to_array();
+        let expected_seed = u64::from_be_bytes([arr[0], arr[1], arr[2], arr[3], arr[4], arr[5], arr[6], arr[7]]);
+
+        assert_eq!(seed, expected_seed);
+        assert_ne!(seed, 0);
+    }
+
+    #[test]
+    fn build_internal_seed_produces_non_zero_seed() {
+        let env = Env::default();
+        let raffle_id = Address::generate(&env);
+        let seed = build_internal_seed(&env, &raffle_id);
+        assert_ne!(seed.to_array(), [0u8; 32]);
     }
 }
