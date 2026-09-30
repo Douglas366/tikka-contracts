@@ -125,6 +125,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Run shellcheck
         run: make shellcheck
+      - name: Test deployment helpers
+        run: bash scripts/tests/test_common.sh
 
   oracle_check:
     name: Oracle Service CI
