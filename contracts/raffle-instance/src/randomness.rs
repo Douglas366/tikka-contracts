@@ -638,19 +638,34 @@ mod tests {
             .register_stellar_asset_contract_v2(Address::generate(&env))
             .address();
 
-        // Deterministic contract-scoped addresses for cross-service golden vectors.
-        let addr_a = Address::generate(&env);
-        let addr_b = Address::generate(&env);
+        // Fixed addresses from strkey constants for deterministic golden vectors.
+        // These match oracle/src/vrf/__fixtures__/quorum-aggregate-vectors.json
+        let addr_a = Address::from_string(&String::from_str(
+            &env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        ));
+        let addr_b = Address::from_string(&String::from_str(
+            &env,
+            "GBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAALW7G",
+        ));
 
         let aggregate = env.as_contract(&contract, || {
             let mut v = Vec::new(&env);
+            // Push in arbitrary order to verify sort-independence
             v.push_back((addr_b.clone(), 0xDEAD_BEEFu64));
             v.push_back((addr_a.clone(), 0xCAFE_BABEu64));
             aggregate_quorum_seeds(&env, 0u64, &v)
         });
 
         // Exported to oracle/src/vrf/__fixtures__/quorum-aggregate-vectors.json
-        assert_ne!(aggregate, 0);
+        // Value must match expectedAggregate field in the fixture.
+        // To recompute: run this test, read the assertion failure output, and update both files.
+        const EXPECTED: u64 = 10119511462668705633;
+        assert_eq!(
+            aggregate, EXPECTED,
+            "Golden vector mismatch! Update EXPECTED in this test and expectedAggregate in oracle/src/vrf/__fixtures__/quorum-aggregate-vectors.json to the actual value: {}",
+            aggregate
+        );
     }
 
     #[test]
