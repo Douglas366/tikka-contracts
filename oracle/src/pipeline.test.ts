@@ -1,4 +1,5 @@
 import { OraclePipeline } from './pipeline';
+import { createInjectedPipeline } from './pipeline.test-utils';
 import { Alerter } from './alert/alerter';
 import { MemoryLedgerCheckpointStore } from './listener/ledger-checkpoint';
 import { DeduplicationStore } from './deduplication/deduplication.store';
@@ -24,6 +25,10 @@ describe('OraclePipeline', () => {
       alertQueueAgeLimitMs: 300000,
       alertRpcUnreachableThreshold: 3,
       retryPolicy: { baseMs: 500, maxMs: 30000, maxAttempts: 5 },
+      dataDir: '/tmp/oracle-data',
+      checkpointPath: '/tmp/oracle-data/checkpoint.json',
+      dedupPath: '/tmp/oracle-data/dedup.json',
+      rpcSimulateTimeoutMs: 10000,
     };
 
     mockAlerter = new Alerter({ webhookUrl: '', rateLimitMs: 60000 });
@@ -40,79 +45,44 @@ describe('OraclePipeline', () => {
   });
 
   it('constructs all required components', () => {
-    const pipeline = new OraclePipeline({
-      config: mockConfig,
-      alerter: mockAlerter,
-      checkpointStore: mockCheckpoint,
-      dedupStore: mockDedup,
-    });
+    const pipeline = createInjectedPipeline(mockConfig, mockAlerter, mockCheckpoint, mockDedup);
 
     expect(pipeline).toBeDefined();
     expect(pipeline).toBeInstanceOf(OraclePipeline);
   });
 
-  it('uses default stores when none provided', () => {
-    const pipeline = new OraclePipeline({
-      config: mockConfig,
-      alerter: mockAlerter,
-    });
+  it('accepts injected stores', () => {
+    const pipeline = createInjectedPipeline(mockConfig, mockAlerter, mockCheckpoint, mockDedup);
 
     expect(pipeline).toBeDefined();
   });
 
-  it('initializes KeyService when start is called', async () => {
-    const pipeline = new OraclePipeline({
-      config: mockConfig,
-      alerter: mockAlerter,
-      checkpointStore: mockCheckpoint,
-      dedupStore: mockDedup,
-    });
-
-    // start() initializes KeyService
-    // We don't actually start it fully to avoid network calls, but verify construction
-    expect(pipeline).toBeDefined();
-  });
-
-  it('configures TxSubmitter with RPC URL and alerter', () => {
-    const pipeline = new OraclePipeline({
-      config: mockConfig,
-      alerter: mockAlerter,
-      checkpointStore: mockCheckpoint,
-      dedupStore: mockDedup,
-    });
+  it('accepts an injected key service', async () => {
+    const pipeline = createInjectedPipeline(mockConfig, mockAlerter, mockCheckpoint, mockDedup);
 
     expect(pipeline).toBeDefined();
   });
 
-  it('configures EventListener with poll interval and RPC settings', () => {
-    const pipeline = new OraclePipeline({
-      config: mockConfig,
-      alerter: mockAlerter,
-      checkpointStore: mockCheckpoint,
-      dedupStore: mockDedup,
-    });
+  it('accepts an injected transaction submitter', () => {
+    const pipeline = createInjectedPipeline(mockConfig, mockAlerter, mockCheckpoint, mockDedup);
 
     expect(pipeline).toBeDefined();
   });
 
-  it('configures GracefulShutdown with 30-second drain timeout', () => {
-    const pipeline = new OraclePipeline({
-      config: mockConfig,
-      alerter: mockAlerter,
-      checkpointStore: mockCheckpoint,
-      dedupStore: mockDedup,
-    });
+  it('accepts an injected event listener', () => {
+    const pipeline = createInjectedPipeline(mockConfig, mockAlerter, mockCheckpoint, mockDedup);
+
+    expect(pipeline).toBeDefined();
+  });
+
+  it('accepts an injected graceful shutdown handler', () => {
+    const pipeline = createInjectedPipeline(mockConfig, mockAlerter, mockCheckpoint, mockDedup);
 
     expect(pipeline).toBeDefined();
   });
 
   it('submits the seed derived from the VRF proof, not the clock', async () => {
-    const pipeline = new OraclePipeline({
-      config: mockConfig,
-      alerter: mockAlerter,
-      checkpointStore: mockCheckpoint,
-      dedupStore: mockDedup,
-    });
+    const pipeline = createInjectedPipeline(mockConfig, mockAlerter, mockCheckpoint, mockDedup);
     const requestId = 42n;
     const raffleContract = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4';
     const proof = Buffer.from('signed randomness proof');
@@ -126,13 +96,19 @@ describe('OraclePipeline', () => {
       requestId,
     });
     const internals = pipeline as unknown as {
-      processJob: (job: { requestId: bigint; raffleContract: string; timestamp: bigint }) => Promise<boolean>;
+      processJob: (job: {
+        requestId: bigint;
+        raffleContract: string;
+        timestamp: bigint;
+      }) => Promise<boolean>;
       quorumService: { checkQuorumParticipation: jest.Mock };
       vrfService: { signRandomnessProof: jest.Mock };
       txSubmitter: { submitProvideRandomness: jest.Mock };
     };
     internals.quorumService = {
-      checkQuorumParticipation: jest.fn().mockResolvedValue({ isParticipant: false, k: 0, oracles: [] }),
+      checkQuorumParticipation: jest
+        .fn()
+        .mockResolvedValue({ isParticipant: false, k: 0, oracles: [] }),
     };
     internals.vrfService = { signRandomnessProof };
     internals.txSubmitter = { submitProvideRandomness };
@@ -147,12 +123,7 @@ describe('OraclePipeline', () => {
   });
 
   it('allows shutting down before start() completes without throwing TypeError', async () => {
-    const pipeline = new OraclePipeline({
-      config: mockConfig,
-      alerter: mockAlerter,
-      checkpointStore: mockCheckpoint,
-      dedupStore: mockDedup,
-    });
+    const pipeline = createInjectedPipeline(mockConfig, mockAlerter, mockCheckpoint, mockDedup);
     const internals = pipeline as unknown as { requestQueue: { enqueue: (job: any) => void } };
     internals.requestQueue.enqueue({ requestId: 1n, raffleContract: 'C1', timestamp: 0n });
 

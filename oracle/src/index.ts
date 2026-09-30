@@ -2,7 +2,7 @@ import { Alerter } from './alert/alerter';
 import { loadAndValidateConfig } from './config';
 import { startHealthServer } from './health/health.server';
 import { logger } from './logging/logger';
-import { createPipeline } from './pipeline';
+import { createPipeline } from './composition-root';
 
 /**
  * Bootstrap entry point. Wires the full oracle pipeline and exposes /health and
@@ -29,7 +29,7 @@ async function main(): Promise<void> {
     });
   }
 
-  const pipeline = createPipeline(config, { alerter });
+  const pipeline = await createPipeline(config, { alerter });
 
   const shutdown = (): void => {
     void pipeline.shutdown().finally(() => {
@@ -51,6 +51,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  logger.error(`Oracle service failed to start: ${error instanceof Error ? error.message : String(error)}`);
+  logger.error(
+    `Oracle service failed to start: ${error instanceof Error ? error.message : String(error)}`
+  );
   process.exit(1);
 });
