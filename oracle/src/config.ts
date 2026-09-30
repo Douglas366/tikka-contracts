@@ -1,6 +1,8 @@
+import path from 'path';
 import { Keypair } from '@stellar/stellar-sdk';
 import { decodeSecretKey } from './keys/secret-key';
 import { logger } from './logging/logger';
+import { RetryPolicyOptions } from './tx/retry-policy';
 
 export interface OracleConfig {
   rpcUrl: string;
@@ -14,6 +16,18 @@ export interface OracleConfig {
   alertQueueDepthLimit: number;
   alertQueueAgeLimitMs: number;
   alertRpcUnreachableThreshold: number;
+  retryPolicy: RetryPolicyOptions;
+  /** Absolute path to the directory used for checkpoint and dedup state files. */
+  dataDir: string;
+  /** Absolute path to the ledger checkpoint JSON file. */
+  checkpointPath: string;
+  /** Absolute path to the deduplication store JSON file. */
+  dedupPath: string;
+  /**
+   * Timeout in milliseconds for a single `simulateTransaction` RPC call made
+   * by QuorumService.  Prevents a hung RPC from stalling the serial queue loop.
+   */
+  rpcSimulateTimeoutMs: number;
 }
 
 function readPositiveInt(name: string, defaultValue: number, errors: string[]): number {
@@ -78,6 +92,12 @@ export function loadAndValidateConfig(): OracleConfig {
   const alertQueueDepthLimit = readPositiveInt('ALERT_QUEUE_DEPTH_LIMIT', 10, errors);
   const alertQueueAgeLimitMs = readPositiveInt('ALERT_QUEUE_AGE_LIMIT_MS', 300_000, errors);
   const alertRpcUnreachableThreshold = readPositiveInt('ALERT_RPC_UNREACHABLE_THRESHOLD', 3, errors);
+  const retryPolicy: RetryPolicyOptions = {
+    baseMs: readPositiveInt('ORACLE_RETRY_BASE_MS', 500, errors),
+    maxMs: readPositiveInt('ORACLE_RETRY_MAX_MS', 30_000, errors),
+    maxAttempts: readPositiveInt('ORACLE_RETRY_MAX_ATTEMPTS', 5, errors),
+  };
+  const rpcSimulateTimeoutMs = readPositiveInt('RPC_SIMULATE_TIMEOUT_MS', 10_000, errors);
 
   if (errors.length > 0) {
     logger.error('Configuration errors:');
@@ -90,6 +110,12 @@ export function loadAndValidateConfig(): OracleConfig {
   // At this point errors.length === 0, so rpcUrl and factoryContractId are defined.
   // The non-null assertions below are replaced by explicit narrowing guards above
   // (process.exit(1) means we never reach here with undefined values).
+
+  // Resolve data directory to an absolute path so it is CWD-independent.
+  const dataDir = path.resolve(process.env['DATA_DIR'] ?? './data');
+  const checkpointPath = path.join(dataDir, 'checkpoint.json');
+  const dedupPath = path.join(dataDir, 'dedup.json');
+
   return {
     rpcUrl: rpcUrl as string,
     factoryContractId: factoryContractId as string,
@@ -102,5 +128,10 @@ export function loadAndValidateConfig(): OracleConfig {
     alertQueueDepthLimit,
     alertQueueAgeLimitMs,
     alertRpcUnreachableThreshold,
+    retryPolicy,
+    dataDir,
+    checkpointPath,
+    dedupPath,
+    rpcSimulateTimeoutMs,
   };
 }

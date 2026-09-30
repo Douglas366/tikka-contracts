@@ -133,4 +133,29 @@ describe('Oracle Pipeline Integration - Error and Retry Paths', () => {
       }),
     ).rejects.toThrow(/Permanent failure/);
   });
+
+  it('stops after the injected retry policy maxAttempts', async () => {
+    const submitter = new TxSubmitterService(keyService, {
+      rpcUrl,
+      retryPolicy: { maxAttempts: 2, baseMs: 0, maxMs: 0 },
+      sleep: async () => {},
+    });
+    let attempts = 0;
+    SorobanRpc.Server.prototype.getAccount = async () => {
+      attempts++;
+      throw new Error('ECONNRESET');
+    };
+
+    await expect(
+      submitter.submitProvideRandomness({
+        raffleContract,
+        randomSeed: 333333n,
+        publicKey: keyService.getPublicKeyBytes(),
+        proof: new Uint8Array(64),
+        requestId,
+      }),
+    ).rejects.toThrow(/after 2 attempts/);
+
+    expect(attempts).toBe(2);
+  });
 });

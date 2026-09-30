@@ -2,7 +2,11 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 pub mod constants;
+pub mod config_builder;
+pub mod errors;
 pub mod events;
+
+pub use config_builder::{ConfigValidationError, RaffleConfigBuilder};
 
 #[cfg(test)]
 mod nft_mint_test;
@@ -147,6 +151,7 @@ pub enum RandomnessType {
     Vrf = 1,
     /// Fallback path used when preferred randomness path is unavailable.
     Fallback = 2,
+    Quorum = 3,
 }
 
 /// Configuration for a recurring (subscription) raffle.
@@ -208,6 +213,14 @@ pub struct RaffleConfig {
     pub randomness_source: RandomnessSource,
     /// Optional oracle contract address for external randomness flows.
     pub oracle_address: Option<Address>,
+    /// Ed25519 public key (32 bytes) belonging to the registered oracle.
+    ///
+    /// Required when `randomness_source == External`.  The raffle-instance
+    /// stores this key and rejects any `provide_randomness` call whose
+    /// `public_key` argument does not match — preventing an adversary from
+    /// substituting a throwaway keypair whose proof hashes to a favourable
+    /// seed (#985).
+    pub oracle_public_key: Option<BytesN<32>>,
     /// Protocol fee in basis points (100 = 1%). Currently charged at ticket
     /// purchase only. See docs/FEE_MODEL.md for the implemented fee model.
     pub protocol_fee_bp: u32,
@@ -248,16 +261,6 @@ pub struct RaffleConfig {
     pub prize_token: Option<Address>,
     /// Optional NFT contract for ticket receipts.
     pub nft_contract: Option<Address>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[contracttype]
-pub struct BuyQuote {
-    pub gross: i128,
-    pub discount: i128,
-    pub fee: i128,
-    pub net_to_pay: i128,
-    pub effective_ticket_price: i128,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
