@@ -6,8 +6,8 @@ COPY . .
 RUN npm run build
 RUN npm prune --production
 
-FROM node:20-slim AS runtime
-RUN apt-get update && apt-get install -y tini && rm -rf /var/lib/apt/lists/*
+FROM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends tini=0.19.0-1 && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
