@@ -190,3 +190,49 @@ Or find that state is already final → no unpaid tickets can be minted
 
 This closes the attack vector described in Issue #763.
 
+## Recurring Raffles
+
+Recurring raffles allow creators to deploy an automated, periodic series of raffles (e.g. weekly or monthly) using a single template configuration without manual redeployment.
+
+### State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> Active: create_recurring_raffle
+    Active --> Active: trigger_next_round [now >= next_due && (max_rounds == 0 || round < max_rounds)]
+    Active --> Cancelled: cancel_recurring_raffle [creator or admin]
+    Cancelled --> [*]
+```
+
+### Recurring Schedule States
+
+- **`Active` (`active = true`)**: The recurring schedule is running. When the ledger timestamp reaches `next_due`, `trigger_next_round` can be invoked to deploy the instance for the next round.
+- **`Cancelled` (`active = false`)**: Terminal state for the recurring schedule. No further rounds can be triggered. Raffles already deployed in previous rounds continue their normal lifecycle unaffected.
+
+### Round Lifecycle & Authorisation Model
+
+1. **Schedule Creation (`create_recurring_raffle`)**:
+   - **Auth**: Requires creator authorization (`creator.require_auth()`).
+   - **Interval Validation**: Strictly enforces `MIN_RECURRING_INTERVAL_SECONDS` (3,600s / 1 hour) <= `interval_seconds` <= `MAX_RECURRING_INTERVAL_SECONDS` (31,536,000s / 365 days).
+   - Sets `current_round = 0`, `active = true`, `next_due = now + interval_seconds`.
+   - Emits `RecurringRaffleCreated`.
+
+2. **Round Triggering (`trigger_next_round`)**:
+   - **Auth**: **Permissionless.** Any account (cron bots, keepers, users, or the creator) may call `trigger_next_round` once `now >= next_due`. This prevents recurring schedules from stalling if the creator is inactive.
+   - Deploys a new raffle instance using `base_config`.
+   - Advances `current_round += 1`, updates `next_due = now + interval_seconds`, and records the new raffle address.
+   - Emits `RecurringRoundTriggered`.
+
+3. **Max Rounds Semantics**:
+   - `max_rounds = 0`: Unlimited (infinite) recurring raffle.
+   - `max_rounds > 0`: Capped series. Attempting to trigger beyond `max_rounds` fails with `MaxRoundsReached`.
+
+4. **Prize Funding Responsibility**:
+   - Prize funding is **not automatic**. Newly deployed round instances start in the `PendingPrize` status.
+   - The creator (or authorized funder) must call `deposit_prize` on the newly deployed raffle instance contract to transition it to `Active` and begin ticket sales.
+
+5. **Cancellation (`cancel_recurring_raffle`)**:
+   - **Auth**: Restricted to either the schedule `creator` or the factory `admin`.
+   - Sets `active = false` and emits `RecurringRaffleCancelled`.
+
+

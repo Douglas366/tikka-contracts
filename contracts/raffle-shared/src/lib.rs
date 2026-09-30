@@ -160,8 +160,13 @@ pub enum RandomnessType {
 /// Configuration for a recurring (subscription) raffle.
 ///
 /// Enables automatic creation of new raffle instances at a fixed interval
-/// without manual re-deployment.  Designed for weekly / monthly raffles.
-#[derive(Clone)]
+/// without manual re-deployment. Designed for weekly / monthly raffles.
+///
+/// Note: Prize funding is not automatic. When each round is triggered, the
+/// deployed raffle instance starts in `PendingPrize` state. The raffle creator
+/// (or authorized funder) must call `deposit_prize` on the newly deployed
+/// raffle instance to activate ticket sales.
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct RecurringRaffleConfig {
     /// The base raffle configuration reused for every round.
@@ -170,9 +175,6 @@ pub struct RecurringRaffleConfig {
     pub interval_seconds: u64,
     /// Maximum number of rounds (0 = infinite).
     pub max_rounds: u32,
-    /// If true, the creator must pre-authorise the prize funds (not yet
-    /// implemented — reserved for future use).
-    pub auto_fund: bool,
 }
 
 /// Configuration payload used when creating a new raffle.
