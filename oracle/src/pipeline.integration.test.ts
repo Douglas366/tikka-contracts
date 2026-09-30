@@ -154,7 +154,10 @@ describe('Oracle Pipeline Integration - Happy Paths', () => {
 
     const config = {
       rpcUrl,
+      oracleSecretKey: testOracleKeypair.secret(),
+      networkPassphrase: 'Test SDF Network ; September 2015',
       factoryContractId: 'CFACTORY1',
+      nodeEnv: 'test',
       logLevel: 'info',
       pollIntervalMs: 1,
       alertWebhookUrl: '',
@@ -163,6 +166,8 @@ describe('Oracle Pipeline Integration - Happy Paths', () => {
       alertQueueDepthLimit: 10,
       alertQueueAgeLimitMs: 300000,
       alertRpcUnreachableThreshold: 3,
+      queueMaxAttempts: 5,
+      vaultToken: '',
       retryPolicy: { baseMs: 500, maxMs: 30000, maxAttempts: 5 },
       dataDir: '/tmp/oracle-data',
       checkpointPath: '/tmp/oracle-data/checkpoint.json',
@@ -202,7 +207,10 @@ describe('Oracle Pipeline Integration - Happy Paths', () => {
 
     const config = {
       rpcUrl,
+      oracleSecretKey: keypairA.secret(),
+      networkPassphrase: 'Test SDF Network ; September 2015',
       factoryContractId: 'CFACTORY1',
+      nodeEnv: 'test',
       logLevel: 'info',
       pollIntervalMs: 1,
       alertWebhookUrl: '',
@@ -211,6 +219,8 @@ describe('Oracle Pipeline Integration - Happy Paths', () => {
       alertQueueDepthLimit: 10,
       alertQueueAgeLimitMs: 300000,
       alertRpcUnreachableThreshold: 3,
+      queueMaxAttempts: 5,
+      vaultToken: '',
       retryPolicy: { baseMs: 500, maxMs: 30000, maxAttempts: 5 },
       dataDir: '/tmp/oracle-data',
       checkpointPath: '/tmp/oracle-data/checkpoint.json',

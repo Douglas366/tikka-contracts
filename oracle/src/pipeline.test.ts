@@ -15,7 +15,10 @@ describe('OraclePipeline', () => {
   beforeEach(() => {
     mockConfig = {
       rpcUrl: 'http://localhost:8000',
+      oracleSecretKey: 'test-secret',
+      networkPassphrase: 'Test SDF Network ; September 2015',
       factoryContractId: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
+      nodeEnv: 'test',
       logLevel: 'info',
       pollIntervalMs: 5000,
       alertWebhookUrl: '',
@@ -24,6 +27,8 @@ describe('OraclePipeline', () => {
       alertQueueDepthLimit: 10,
       alertQueueAgeLimitMs: 300000,
       alertRpcUnreachableThreshold: 3,
+      queueMaxAttempts: 5,
+      vaultToken: '',
       retryPolicy: { baseMs: 500, maxMs: 30000, maxAttempts: 5 },
       dataDir: '/tmp/oracle-data',
       checkpointPath: '/tmp/oracle-data/checkpoint.json',

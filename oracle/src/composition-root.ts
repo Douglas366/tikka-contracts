@@ -4,6 +4,7 @@ import { DeduplicationStore } from './deduplication/deduplication.store';
 import { EventListenerService } from './listener/event-listener.service';
 import { FileLedgerCheckpointStore, LedgerCheckpointStore } from './listener/ledger-checkpoint';
 import { KeyService } from './keys/key.service';
+import { EnvSecretsAdapter } from './keys/key.service';
 import { OraclePipeline, PipelineDependencies } from './pipeline';
 import { QuorumService } from './quorum/quorum.service';
 import { RequestQueue } from './queue/request-queue';
@@ -21,16 +22,24 @@ export async function createPipeline(
   config: OracleConfig,
   options: CreatePipelineOptions
 ): Promise<OraclePipeline> {
-  const keyService = new KeyService();
+  const keyService = new KeyService(
+    new EnvSecretsAdapter({ ORACLE_SECRET_KEY: config.oracleSecretKey })
+  );
   await keyService.initialize();
 
   const oracleAddress = keyService.getPublicKey();
   const checkpointStore =
     options.checkpointStore ?? new FileLedgerCheckpointStore(config.checkpointPath);
   const dedupStore = options.dedupStore ?? new DeduplicationStore(config.dedupPath);
-  const requestQueue = new RequestQueue();
+  const requestQueue = new RequestQueue({
+    alerter: options.alerter,
+    depthLimit: config.alertQueueDepthLimit,
+    ageLimitMs: config.alertQueueAgeLimitMs,
+    maxAttempts: config.queueMaxAttempts,
+  });
   const eventListener = new EventListenerService(requestQueue, oracleAddress, checkpointStore, {
     rpcUrl: config.rpcUrl,
+    networkPassphrase: config.networkPassphrase,
     pollIntervalMs: config.pollIntervalMs,
     alerter: options.alerter,
     rpcUnreachableThreshold: config.alertRpcUnreachableThreshold,
@@ -44,7 +53,7 @@ export async function createPipeline(
   });
   const quorumService = new QuorumService(
     config.rpcUrl,
-    process.env.STELLAR_NETWORK_PASSPHRASE ?? 'Test Passphrase',
+    config.networkPassphrase,
     oracleAddress,
     config.rpcSimulateTimeoutMs
   );
@@ -61,7 +70,7 @@ export async function createPipeline(
           message: `Oracle service ${code === 0 ? 'stopped' : 'failed'} (exit code ${code})`,
         })
         .finally(() => {
-          if (process.env.NODE_ENV !== 'test') {
+          if (config.nodeEnv !== 'test') {
             process.exit(code);
           }
         });

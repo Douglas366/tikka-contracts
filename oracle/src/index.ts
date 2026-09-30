@@ -1,7 +1,7 @@
 import { Alerter } from './alert/alerter';
 import { loadAndValidateConfig } from './config';
 import { startHealthServer } from './health/health.server';
-import { logger } from './logging/logger';
+import { configureLogger, logger } from './logging/logger';
 import { createPipeline } from './composition-root';
 
 /**
@@ -10,6 +10,7 @@ import { createPipeline } from './composition-root';
  */
 async function main(): Promise<void> {
   const config = loadAndValidateConfig();
+  configureLogger({ level: config.logLevel, production: config.nodeEnv === 'production' });
 
   const alerter = new Alerter({
     webhookUrl: config.alertWebhookUrl,
