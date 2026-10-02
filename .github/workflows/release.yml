@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up pinned Rust toolchain
-        uses: ./.github/actions/setup-rust-toolchain
+        uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
       - name: Run Tests
         run: cargo test --workspace
@@ -38,11 +38,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up pinned Rust toolchain
-        uses: ./.github/actions/setup-rust-toolchain
-      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
-
-      - name: Install Stellar CLI
+        uses: ./.github/actions/setup-rust
+      - name: Set up Stellar CLI
         uses: ./.github/actions/setup-stellar-cli
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
 
       # Builds through the same path as the deploy scripts, so the artifacts
       # attached here are the ones that get deployed (issue #841).

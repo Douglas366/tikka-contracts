@@ -1,32 +1,23 @@
 [tool.ruff]
-# Only lint the scripts directory; the rest of the repo is Rust.
-include = ["scripts/**/*.py"]
-line-length = 100
 target-version = "py311"
+line-length = 100
 
 [tool.ruff.lint]
-# E/W — pycodestyle errors/warnings
-# F   — Pyflakes (undefined names, unused imports, …)
-# I   — isort (import ordering)
-# UP  — pyupgrade (use modern Python syntax)
-# B   — flake8-bugbear (likely bugs and design problems)
-# SIM — flake8-simplify
-select = ["E", "F", "W", "I", "UP", "B", "SIM"]
-
+# E/W = pycodestyle, F = pyflakes, I = isort, UP = pyupgrade,
+# B = flake8-bugbear, C4 = flake8-comprehensions, SIM = flake8-simplify,
+# PTH = flake8-use-pathlib (enforces Path over os.path),
+# PERF = perflint, RUF = ruff-specific rules.
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "PTH", "PERF", "RUF"]
 ignore = [
-    # String concat in large lookup dicts is fine; E501 is line-length, handled above.
-    "E501",
-    # Allow bare `except` only where explicitly needed (check_orphan_modules).
-    # Handled per-file below.
+    "E501",   # line-too-long — black/ruff-format handles this
+    "SIM108", # ternary operator — less readable in complex conditions
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# generate_error_docs.py contains large hardcoded lookup dicts that are not
-# worth auto-formatting and are clear as-is.
-"scripts/generate_error_docs.py" = ["E501"]
-# check_orphan_modules uses a broad except to avoid crashing on unreadable files.
-"scripts/check_orphan_modules.py" = ["BLE001"]
+# Tests use assert and may import private helpers directly.
+"scripts/tests/**" = ["S101"]
 
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+line-ending = "lf"

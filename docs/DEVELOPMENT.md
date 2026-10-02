@@ -15,11 +15,30 @@ in `rust-toolchain.toml` and picked up automatically by `rustup`.
 
 ## Local Checks
 
-Run `make ci` before pushing. It executes every check the CI workflow runs, in
-the same order, so a local green build means CI will pass:
+Before opening a pull request, run the full CI suite with a single command:
 
 ```bash
 make ci
+```
+
+This mirrors `.github/workflows/ci.yml` exactly: orphan check, formatting,
+contract build, WASM size gate, docs sync, clippy, tests, doc-tests,
+shellcheck, and the complete oracle pipeline. If `make ci` is green, CI will
+be green.
+
+Individual targets are also available when you want a faster focused check:
+
+```bash
+make fmt-check      # cargo fmt --all -- --check
+make clippy         # cargo clippy --all-targets --all-features
+make test           # cargo test --workspace
+make test-doc       # cargo test --workspace --doc
+make build          # stellar contract build  (wasm32v1-none)
+make orphan-check   # python3 scripts/check_orphan_modules.py
+make wasm-size      # python3 scripts/check_wasm_sizes.py
+make docs-errors    # regenerate + git diff docs/ERRORS.md
+make docs-events    # regenerate + git diff docs/EVENTS.md
+make shellcheck     # shellcheck scripts/*.sh
 ```
 
 This single command covers: orphan-module check, formatting, compile check,
@@ -29,30 +48,33 @@ and the full oracle pipeline (format, lint, typecheck, tests).
 For faster, focused iteration during development:
 
 ```bash
-make fmt          # cargo fmt check only
-make lint         # fmt + clippy
-make test         # cargo test --workspace
-make doc-test     # cargo test --workspace --doc
-make build        # stellar contract build
-make wasm-sizes   # WASM size gate
-make docs-sync    # regenerate + diff ERRORS.md and EVENTS.md
-make shellcheck   # shellcheck scripts/*.sh
-make oracle-ci    # full oracle pipeline
+make oracle-fmt-check   # Prettier formatting check
+make oracle-lint        # ESLint
+make oracle-typecheck   # TypeScript compile check
+make oracle-test-ci     # Jest tests (CI mode, with coverage)
 ```
+
+The workspace currently has known build issues, so record any failure and
+consult the relevant issue before claiming a green build. See [TESTING.md](TESTING.md)
+for the test layout and [FAQ.md](FAQ.md) for common environment and toolchain
+problems. Do not treat stale implementation plans or status notes as evidence
+that a feature works.
 
 ## Build Targets
 
-Build all contracts through the Stellar CLI (same target the deploy scripts use):
+The two contract packages are `raffle-factory` and `raffle-instance`. Contracts
+are built with the Stellar CLI, which targets `wasm32v1-none` — the same target
+the deploy scripts use (issue #841):
 
 ```bash
-make build   # stellar contract build → wasm32v1-none
+make build
 ```
 
-To build individual packages:
+Or to build individual packages:
 
 ```bash
-stellar contract build -p raffle-factory
-stellar contract build -p raffle-instance
+cargo build --target wasm32v1-none --release -p raffle-factory
+cargo build --target wasm32v1-none --release -p raffle-instance
 ```
 
 Deployment and verification instructions are maintained in

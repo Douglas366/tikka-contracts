@@ -28,13 +28,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # rust-toolchain.toml is the single source of truth for the compiler
+      # version, components and WASM target (issues #841, #843).
       - name: Set up pinned Rust toolchain
-        uses: ./.github/actions/setup-rust-toolchain
+        uses: ./.github/actions/setup-rust
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
 
-      - run: cargo check --workspace --all-targets --all-features --exclude raffle-fuzz
+      - run: cargo check --workspace --all-targets --all-features
 
   build_and_test:
     name: Build, Test, and Lint
@@ -48,36 +50,44 @@ jobs:
     # rust-toolchain.toml is the single source of truth for the compiler
     # version, components and WASM target (issues #841, #843).
     - name: Set up pinned Rust toolchain
-      uses: ./.github/actions/setup-rust-toolchain
+      uses: ./.github/actions/setup-rust
 
     - name: Rust Cache
       uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+
+    - name: Check for Orphaned Modules
+      run: python3 scripts/check_orphan_modules.py
 
     - name: Cargo Check (fast compile gate)
       run: make check
 
     - name: Check Formatting
-      run: make fmt
+      run: make fmt-check
 
     - name: Check for Orphaned Modules
       run: make orphan-check
 
+    - name: Check Doc Links
+      run: python3 scripts/check_doc_links.py
+    - name: Check Error Code Catalog
+      run: python3 scripts/check_error_codes.py
+
     # Build through the Stellar CLI so CI produces the same artifacts the deploy
     # scripts upload — previously CI built wasm32-unknown-unknown while
     # deploy-testnet.sh deployed wasm32v1-none (issue #841).
-    - name: Install Stellar CLI
+    - name: Set up Stellar CLI
       uses: ./.github/actions/setup-stellar-cli
 
     - name: Build Contracts
       run: make build
 
     - name: Check WASM Binary Size (128KB limit + baseline delta)
-      run: make wasm-sizes
+      run: make wasm-size
 
     - name: Report WASM size delta on PR
       if: github.event_name == 'pull_request'
       run: |
-        make wasm-sizes
+        make wasm-size
         if [ -f /tmp/wasm-size-report.txt ]; then
           {
             echo "### WASM size report"
@@ -89,17 +99,23 @@ jobs:
       env:
         WASM_SIZE_REPORT: /tmp/wasm-size-report.txt
 
-    - name: Check Docs Sync (errors + events)
-      run: make docs-sync
+    - name: Check Error Docs Sync
+      run: make docs-errors
+      run: |
+        python3 scripts/generate_error_docs.py
+        git diff --exit-code docs/ERRORS.md || (echo "ERROR: docs/ERRORS.md is out of sync with ProtocolError in contracts/raffle-shared/src/errors.rs. Run 'python3 scripts/generate_error_docs.py' to update." && exit 1)
+
+    - name: Check Events Docs Sync
+      run: make docs-events
 
     - name: Run Linter (Clippy)
-      run: make lint
+      run: make clippy
 
     - name: Run Tests
       run: make test
 
     - name: Run Documentation Tests
-      run: make doc-test
+      run: make test-doc
 
   shellcheck:
     name: Shell Script Checks
@@ -111,6 +127,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Run shellcheck
         run: make shellcheck
+      - name: Test deployment helpers
+        run: bash scripts/tests/test_common.sh
 
   oracle_check:
     name: Oracle Service CI
@@ -127,13 +145,13 @@ jobs:
         timeout-minutes: 5
         run: cd oracle && npm ci
       - name: Check formatting (Prettier)
-        run: make oracle-fmt
+        run: make oracle-fmt-check
       - name: Lint (ESLint)
         run: make oracle-lint
       - name: TypeScript compile check
         run: make oracle-typecheck
       - name: Run tests
-        run: make oracle-ci
+        run: make oracle-test-ci
 
       - name: Upload Oracle coverage artifact
         if: always()
@@ -154,13 +172,13 @@ jobs:
       # version (issue #1013) — the coverage job must measure the same
       # toolchain that CI builds and tests with.
       - name: Set up pinned Rust toolchain
-        uses: ./.github/actions/setup-rust-toolchain
+        uses: ./.github/actions/setup-rust
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d # v2
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2
         with:
           tool: cargo-llvm-cov
 
