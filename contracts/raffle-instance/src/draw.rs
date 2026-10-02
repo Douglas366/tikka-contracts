@@ -18,6 +18,11 @@ use crate::{
     CommitRevealEntry, DataKey, Error, RaffleStatus, ORACLE_TIMEOUT_LEDGERS,
     RANDOMNESS_MIN_DELAY_LEDGERS,
 };
+use crate::randomness::{build_vrf_proof_message, derive_random_seed_from_proof};
+use crate::{
+    CommitRevealEntry, DataKey, Error, RaffleStatus, ORACLE_TIMEOUT_LEDGERS,
+    RANDOMNESS_MIN_DELAY_LEDGERS,
+};
 
 pub(crate) fn finalize_raffle(env: Env) -> Result<(), Error> {
     let drawing_lock: bool = env
@@ -41,8 +46,12 @@ pub(crate) fn finalize_raffle(env: Env) -> Result<(), Error> {
         // when it sold out, and the creator may still finalize it here.
     }
     let mut raffle = read_raffle(&env)?;
-    raffle.creator.require_auth();
 
+    // Finalization is permissionless: the preconditions below (time_ended ||
+    // tickets_full) are fully verifiable on chain, so anyone may call this once
+    // they hold. Requiring creator auth let a creator stall a raffle that was
+    // already contractually over, leaving buyers' funds escrowed with no path
+    // out (refund_ticket needs Cancelled or Failed). #1000
     if raffle.status != RaffleStatus::Active && raffle.status != RaffleStatus::Drawing {
         return Err(Error::InvalidStatus);
     }
@@ -77,6 +86,11 @@ pub(crate) fn finalize_raffle(env: Env) -> Result<(), Error> {
         return Ok(());
     }
 
+    // `DrawTriggered.caller` keeps reporting the raffle creator. The SDK
+    // exposes no invoker address (`Env::invoker` does not exist in
+    // soroban-sdk 23.x), so now that finalization is permissionless there is no
+    // trustworthy value for this field; the event schema is unchanged to avoid
+    // breaking existing consumers. #1000
     let caller = raffle.creator.clone();
     let pre_status = raffle.status.clone();
     let already_drawing = pre_status == RaffleStatus::Drawing;
@@ -275,7 +289,7 @@ pub(crate) fn provide_randomness(
         .instance()
         .get(&DataKey::RandomnessRequestLedger)
         .unwrap_or(0);
-    if env.ledger().sequence() < req_ledger + RANDOMNESS_MIN_DELAY_LEDGERS {
+    if env.ledger().sequence() < req_ledger.saturating_add(RANDOMNESS_MIN_DELAY_LEDGERS) {
         return Err(Error::RandomnessTooEarly);
     }
 
@@ -349,7 +363,7 @@ pub(crate) fn trigger_randomness_fallback(
         .instance()
         .get(&DataKey::RandomnessRequestLedger)
         .unwrap_or(0);
-    if env.ledger().sequence() < req_ledger + ORACLE_TIMEOUT_LEDGERS {
+    if env.ledger().sequence() < req_ledger.saturating_add(ORACLE_TIMEOUT_LEDGERS) {
         return Err(Error::FallbackTooEarly);
     }
 
@@ -552,16 +566,8 @@ pub(crate) fn provide_quorum_randomness(
     Ok(())
 }
 
-/// Open a commit made through [`submit_commit`](crate::tickets::submit_commit)
-/// for the `CommitReveal` randomness mode (#989).
-///
-/// The reveal is accepted while the raffle is `Active` or `Drawing`; only a
-/// pre-image that hashes to the stored commitment is recorded.  Reveal is
-/// permissionless — the digest check makes any other pre-image useless.
-pub(crate) fn reveal_commit(env: Env, ticket_id: u32, preimage: BytesN<32>) -> Result<(), Error> {
-    let raffle = read_raffle(&env)?;
-    if raffle.randomness_source != RandomnessSource::CommitReveal {
-        return Err(Error::InvalidParameters);
+        let aggregate = randomness::aggregate_quorum_seeds(&env, request_id, &seeds);
+        crate::helpers::do_finalize_with_seed(&env, raffle, aggregate, RandomnessType::Quorum, Some(seeds))?;
     }
     if raffle.status != RaffleStatus::Active && raffle.status != RaffleStatus::Drawing {
         return Err(Error::InvalidStatus);

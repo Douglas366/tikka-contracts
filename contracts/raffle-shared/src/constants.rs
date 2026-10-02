@@ -8,8 +8,29 @@
 
 // --- Raffle instance limits -------------------------------------------------
 
+/// Minimum number of ledgers that must elapse after a randomness request is
+/// recorded before a VRF proof may be submitted (~50 seconds at 5-second
+/// ledger close times).
+///
+/// This is the *lower* bound of the randomness window: it stops an oracle from
+/// answering in the same ledger the request was made, so the request height is
+/// already committed on-chain before the proof exists. It is the matched pair
+/// of [`ORACLE_TIMEOUT_LEDGERS`], which is the *upper* bound of the same
+/// window:
+///
+/// | Bound | Constant | Guards | Value |
+/// | --- | --- | --- | --- |
+/// | lower | `RANDOMNESS_MIN_DELAY_LEDGERS` | `submit_vrf_proof` | 10 ledgers |
+/// | upper | `ORACLE_TIMEOUT_LEDGERS` | `trigger_randomness_fallback` | 200 ledgers |
+///
+/// See `docs/RANDOMNESS.md` for the full timeline.
+pub const RANDOMNESS_MIN_DELAY_LEDGERS: u32 = 10;
+
 /// Maximum number of ledgers the oracle may take to respond before a fallback
 /// is permitted (~17 minutes at 5-second ledger close times).
+///
+/// This is the *upper* bound of the randomness window; the lower bound is
+/// [`RANDOMNESS_MIN_DELAY_LEDGERS`].
 pub const ORACLE_TIMEOUT_LEDGERS: u32 = 200;
 
 /// Maximum byte-length of a raffle description string.
