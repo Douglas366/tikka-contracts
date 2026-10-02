@@ -284,14 +284,9 @@ impl OracleSeedWinnerSelection {
             return indices;
         }
 
-        let n = total_tickets as u64;
         let effective_count = winner_count.min(total_tickets) as usize;
 
-        // Partial Fisher-Yates shuffle: select effective_count unique indices from [0, n)
-        // in exactly effective_count steps with no unbounded loop.
-        // We use rejection sampling at each step to eliminate modulo bias, and
-        // swap tracking to ensure uniqueness without a linear scan.
-        let mut remaining = n;
+        let mut remaining = total_tickets as u64;
         let mut current_seed = self.seed;
         let mut swaps: std::vec::Vec<(u64, u64)> = std::vec::Vec::new();
 
@@ -305,24 +300,23 @@ impl OracleSeedWinnerSelection {
             let mut candidate = loop {
             let largest_multiple_remaining = (u64::MAX / remaining) * remaining;
             let candidate = loop {
-                if current_seed < largest_multiple_remaining {
+                if current_seed < largest_multiple {
                     break current_seed;
                 }
                 current_seed = current_seed
                     .wrapping_mul(6364136223846793005)
                     .wrapping_add(1442695040888963407);
             };
-            let r = (candidate % remaining) as u32;
+            let r = candidate % remaining;
 
-            // Map the candidate to an actual unique index using Fisher-Yates swap tracking.
-            let mut actual = r as u64;
+            // Resolve virtual position r to its actual index via swap log.
+            let mut actual = r;
             for (pos, val) in swaps.iter() {
                 if *pos == actual {
                     actual = *val;
                     break;
                 }
             }
-
             indices.push(actual as u32);
 
             // Swap: position r now contains what was at position remaining-1.
@@ -335,16 +329,15 @@ impl OracleSeedWinnerSelection {
                 }
             }
 
-            // Record the swap: position r now contains what was at position last.
-            // If position r already has a mapping, overwrite it (most recent swap takes precedence).
-            let mut found_idx: Option<usize> = None;
+            // Record the swap, overwriting any existing entry for position r.
+            let mut found: Option<usize> = None;
             for (idx, (pos, _)) in swaps.iter().enumerate() {
                 if *pos == r {
-                    found_idx = Some(idx);
+                    found = Some(idx);
                     break;
                 }
             }
-            if let Some(idx) = found_idx {
+            if let Some(idx) = found {
                 swaps[idx].1 = last_actual;
             } else {
                 swaps.push((r, last_actual));
@@ -533,6 +526,7 @@ pub fn aggregate_quorum_seeds(env: &Env, request_id: u64, seeds: &Vec<(Address, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use soroban_sdk::testutils::Address as _;
     use soroban_sdk::Env;
 
     /// Deliberately biased winner selector used to verify that the Chi-squared test

@@ -62,6 +62,16 @@ pub const MAX_PRIZE_AMOUNT: i128 = 1_000_000_000_000_000_000_000; // 1e21
 /// docs/RANDOMNESS.md as an enforced limit. See docs/RANDOMNESS.md. (#773)
 pub const MAX_INTERNAL_RANDOMNESS_PRIZE_AMOUNT: i128 = 5_000_000_000; // 5e9 ≈ 500 XLM
 
+/// Minimum number of revealed commits required before a
+/// [`RandomnessSource::CommitReveal`](crate::RandomnessSource::CommitReveal)
+/// draw may derive its seed from the revealed preimages.
+///
+/// A single participant could otherwise grind a commit hash offline until the
+/// derived seed selects their own ticket, so a draw that collects fewer
+/// reveals than this threshold falls back to the internal PRNG seed and emits
+/// `RandomnessFallbackTriggered`.
+pub const MIN_COMMITS_FOR_DRAW: u32 = 2;
+
 // --- Timing constants -------------------------------------------------------
 
 /// Default delay (seconds) between raffle finalization and when winners may
