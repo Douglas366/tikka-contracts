@@ -42,15 +42,13 @@ use raffle_shared::{
         EMERGENCY_WITHDRAW_DELAY_SECONDS, MAX_CLAIM_LOCKUP_SECONDS, MAX_DESCRIPTION_LENGTH,
         MAX_PRIZES, MAX_PRIZE_AMOUNT, MAX_PROTOCOL_FEE_BP,
         MAX_SWAP_DEADLINE_SECONDS, MAX_TICKETS_LIMIT, MIN_CLAIM_EXPIRY_SECONDS, MIN_TICKET_PRICE,
-        ORACLE_TIMEOUT_LEDGERS,
+        ORACLE_TIMEOUT_LEDGERS, RANDOMNESS_MIN_DELAY_LEDGERS,
     },
     BuyQuote, CancelReason, exceeds_internal_randomness_cap, FairnessData, QuorumConfig, RaffleConfig,
     RaffleStats, RaffleStatus, RandomnessSource, RandomnessType, Ticket,
 };
 
 use crate::events::{OracleSeedDelivered, RaffleCreated};
-
-const RANDOMNESS_MIN_DELAY_LEDGERS: u32 = 10;
 
 #[contract]
 pub struct RaffleInstance;
